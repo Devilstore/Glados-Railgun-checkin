@@ -14,7 +14,7 @@ jobs:
   build:
     name: glados/railgun checkin
     runs-on: ubuntu-latest
-    
+      
     permissions:
       contents: read
       actions: write
@@ -23,35 +23,40 @@ jobs:
       matrix:
         python-version: [3.13]
 
+    # 这里加入全局环境变量，强制后续所有第三方 actions 兼容 Node.js 24 运行环境
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     steps:
-    - uses: actions/checkout@v6
-    - name: set up python ${{ matrix.python-version }}
+    - name: Checkout Code
+      uses: actions/checkout@v6
+
+    - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
 
     # 安装 python 库
-    - name: install dependencies
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install requests
         pip install pypushdeer
 
     # 执行 签到脚本
-    - name: running checkin
+    - name: Running checkin
       run: |
         python checkin.py
       env:
-        # env获取
         PUSHDEER_SENDKEY: ${{ secrets.PUSHDEER_SENDKEY }}
         GLADOS_COOKIES: ${{ secrets.GLADOS_COOKIES }}
         GLADOS_EXCHANGE_PLAN: ${{ secrets.GLADOS_EXCHANGE_PLAN }}
         GLADOS_VERBOSE: ${{ secrets.GLADOS_VERBOSE }}
 
-    - name: keep alive
-      uses: liskin/gh-workflow-keepalive@v1
-      
-    - name: delete workflow runs
+    - name: Keep alive
+      uses: liskin/gh-workflow-keepalive@v1 
+        
+    - name: Delete workflow runs
       uses: Mattraks/delete-workflow-runs@v2
       with:
         token: ${{ github.token }}
@@ -59,4 +64,3 @@ jobs:
         retain_days: 7
         keep_minimum_runs: 7
         delete_run_by_conclusion_pattern: success
- 
