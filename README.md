@@ -24,13 +24,14 @@
 
 ![图片加载失败](imgs/2.png)
 
-- 点击第一个选项卡后在`Request Headers`下找到`Cookie`，右键复制cookie的值即可
+- 重新登录实际使用的站点，刷新账号页面，在 Network 中选择成功返回账号信息的 `/api/user/status` 请求。在 `Request Headers` 下找到 `Cookie`，复制完整的值（不含 `Cookie:` 前缀），更新 `GLADOS_COOKIES`。不要复制响应头 `Set-Cookie`、单个 Cookie 值或 cURL 命令。
 
-  > 参考格式：koa:sess=eyJ1c2xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxAwMH0=; koa:sess.sig=xJkOxxxxxxxxxxxxxxxtnM;
+  > 格式示意（不是可用凭据）：`koa:sess=...; koa:sess.sig=...; gld:sess=...; gld:sess.sig=...`
+  > 以浏览器实际发送的完整 Cookie 为准，不要按照旧示例删减字段。上游 [Issue #37](https://github.com/Devilstore/Glados-Railgun-checkin/issues/37) 报告了新增 `gld:sess`、`gld:sess.sig` 后需要更新 Cookie 的情况。Cookie 只保存在 GitHub Secret 中，不要贴到日志、Issue 或代码。
 
 ![图片加载失败](imgs/3.png)
 
-- 多账号请在 `COOKIES` 中 添加多个 `cookies` 中间使用 `&`连接即可。（例如： `c1&c3&c3...`）
+- 多账号请在 `GLADOS_COOKIES` 中 添加多个 `cookies` 中间使用 `&`连接即可。（例如： `c1&c3&c3...`）
 
 3. 配置积分兑换策略（非必须）
 
@@ -71,6 +72,8 @@
 
 
 ## 问题排查与定位
+- `code: -2` / `没有权限` / `No permission` 是站点拒绝登录凭据；如果状态、签到和积分接口均如此，优先重新登录并更新完整 Cookie，核对获取 Cookie 的域名。增加 GitHub Actions 权限不能修复站点登录状态。当前脚本请求 `glados.cloud` 和 `railgun.info`；若浏览器使用其他域名，需要先核对实际 API 请求域名。
+- Actions 的绿色状态现在要求每份 Cookie 至少在一个站点签到成功或重复签到；缺少 Cookie、全部站点失败或部分账号未成功时，以非零状态退出。另一站点拒绝当前 Cookie 不会覆盖已有的成功结果。
 - 大家可以通过查询 actions 中的 running checkin 日志快速定位问题，有其他问题提交issue。
 - 若日志出现 `code : 4, message : Automated check-in detected`：这是 GLaDOS 的**设备平台校验**（`reason=device-mismatch`，即签到请求 UA 平台与登录设备平台不一致）。脚本已内置**设备平台自适应**：首次失败时自动读取服务端返回的 `loginDevice` 并切换对应平台 UA 重试，**无需手动配置 User-Agent**；若长期仍失败，请重新登录 glados.cloud 手动签到一次并刷新 cookie。
 

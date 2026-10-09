@@ -160,7 +160,7 @@ class Config:
         logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_PUSH_KEY} {'已设置' if push_key_env else '未设置'}。")
         logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_EXCHANGE_PLAN}: {self.exchange_plan}。")
 
-        if verbose_env is not None:
+        if verbose_env:
             verbose_env_lower = verbose_env.lower()
             if verbose_env_lower in ["true", "1", "yes", "y"]:
                 self.verbose = True
@@ -356,6 +356,15 @@ class API:
             result["message"] = message
         else:
             self._log("info", LogEmoji.FAIL, f"{{ code : {code}, message : {message} }}", force=True)
+            if code == -2:
+                self._log(
+                    "error", LogEmoji.ERROR,
+                    "站点拒绝当前登录凭据。请重新登录此域名，并将成功的 /api/user/status "
+                    "请求中的完整 Cookie 更新到 GLADOS_COOKIES；不要仅复制旧的 koa:sess "
+                    "两项，需保留浏览器实际发送的 gld:sess、gld:sess.sig 等字段。"
+                    "这不是 GitHub Actions 权限错误。请勿在日志或 Issue 中粘贴 Cookie。",
+                    force=True,
+                )
             result["code"] = CheckinStatus.FAILURE
             result["status"] = "签到失败"
             result["points"] = "0"
@@ -548,6 +557,15 @@ class Checker:
 
         return result
 
+    def exit_code(self) -> int:
+        """每份 Cookie 至少在一个域名成功或重复签到才算通过。"""
+        expected = set(range(1, len(self.config.cookies_list) + 1))
+        completed = {
+            result.cookie_index for result in self.results
+            if result.code in (CheckinStatus.SUCCESS, CheckinStatus.REPEAT)
+        }
+        return 0 if expected and expected.issubset(completed) else 1
+
     def get_results(self) -> List[Dict[str, str]]:
         """获取所有结果"""
         return [result.to_dict() for result in self.results]
@@ -583,8 +601,10 @@ class Checker:
 logger = init_logger()
 
 
-def main():
-    """主函数"""
+def main() -> int:
+    """主函数；业务失败通过非零退出码反馈给 Actions。"""
+    config = None
+    exit_code = 1
     try:
         # 1. 加载配置
         logger.info(f"{LogEmoji.START} 步骤 1: 加载配置")
@@ -598,6 +618,7 @@ def main():
             logger.info(f"{LogEmoji.START} 步骤 2: 执行签到")
             checker = Checker(config)
             checker.checkin_all()
+            exit_code = checker.exit_code()
 
             # 3. 格式化结果
             logger.info(f"{LogEmoji.START} 步骤 3: 格式化结果")
@@ -605,15 +626,18 @@ def main():
             logger.info(f"\n{LogEmoji.END}========== 签到总结 ==========\n{title}\n{log_content}")
 
     except Exception as e:
+        exit_code = 1
         logger.error(f"{LogEmoji.ERROR} 主程序执行过程中发生未预期的错误: {e}")
         title, content, log_content = "# 脚本执行出错", str(e), str(e)
 
     # 4. 发送推送
     logger.info(f"{LogEmoji.START} 步骤 4: 发送推送")
-    push_service = PushService(config if "config" in locals() else "")
-    push_service.send(title, content)
+    if config is not None:
+        push_service = PushService(config)
+        push_service.send(title, content)
     logger.info(f"{LogEmoji.END} 签到完成")
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
