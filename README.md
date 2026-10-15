@@ -4,10 +4,6 @@
 
 ### 注册一个GLaDOS的账号([注册地址](https://glados.space/landing/0A58E-NV28S-6U3QV-33VMG))
 
-#### 我的邀请码：([0A58E-NV28S-6U3QV-33VMG](https://0a58e-nv28s-6u3qv-33vmg.glados.space)) 
-
-#### 我的优惠码（9折）：([DEVILSTORE](https://0a58e-nv28s-6u3qv-33vmg.glados.space)) 
-
 ### **Fork**本仓库
 
 ![图片加载失败](imgs/1.png)
@@ -56,11 +52,12 @@
 ## 文件结构
 
 ```shell
-│  checkin.py	# 签到脚本
-│
-├─.github
-│  └─workflows
-│          gladosCheck.yml	# Actions 配置文件
+├── checkin.py                 # 签到主程序
+├── logging_config.py          # 日志配置
+├── test_checkin.py            # 单元测试
+└── .github/
+    └── workflows/
+        └── gladosCheck.yml    # GitHub Actions 工作流
 ```
 
 ## 更新日志
