@@ -1,25 +1,29 @@
+<div align="center">
+
 # GLaDOS 自动签到
 
-每天自动完成签到，结果可推送到手机。
+<p><sub>每天自动完成签到，结果可推送到手机。</sub></p>
 
 支持 **多账号** · **域名自动探测** · **设备自适应** · **单轮时间预算**，运行在 GitHub Actions 上，无需服务器。
 
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Python](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 
-[快速开始](#快速开始) · [账号配置](#配置-glados_cookies) · [积分兑换](#积分兑换) · [消息推送](#消息推送) · [安全与隐私](#安全与隐私) · [问题排查](#问题排查) · [常见问题](#常见问题faq)
+[快速开始](#快速开始) · [账号配置](#配置-glados_cookies) · [积分兑换](#积分兑换) · [消息推送](#消息推送) · [问题排查](#问题排查) · [常见问题](#常见问题faq)
+
+</div>
+
+---
 
 > [!NOTE]
-> 非官方项目，与 GLaDOS 官方无关，仅供学习与个人使用。
+> 非官方项目，与 GLaDOS 官方无关，仅供学习与交流使用。
 
-## 快速开始
+## 🚀快速开始
 
 > [!TIP]
 > **还没有 GLaDOS 账号？**
 >
-> 用[**邀请链接注册**](https://glados.space/landing/0A58E-NV28S-6U3QV-33VMG) 享 9 折优惠，也算支持本项目。
->
-> 邀请码 [`0A58E-NV28S-6U3QV-33VMG`](https://0a58e-nv28s-6u3qv-33vmg.glados.space) · 优惠码 [`DEVILSTORE`](https://0a58e-nv28s-6u3qv-33vmg.glados.space)
+> 用[**邀请链接注册**](https://glados.space/landing/0A58E-NV28S-6U3QV-33VMG) 享 9 折优惠， 邀请码 [`0A58E-NV28S-6U3QV-33VMG`](https://0a58e-nv28s-6u3qv-33vmg.glados.space) · 优惠码 [`DEVILSTORE`](https://0a58e-nv28s-6u3qv-33vmg.glados.space)
 
 1. Fork 本仓库。
 2. 在自己的仓库进入 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，至少添加 `GLADOS_COOKIES`。
@@ -30,23 +34,31 @@
 | --- | :---: | --- |
 | `GLADOS_COOKIES` | **是** | 账号列表，固定 JSON 数组，见[账号配置](#配置-glados_cookies) |
 | `PUSHDEER_SENDKEY` | 否 | PushDeer 推送，见[消息推送](#消息推送) |
-| `SERVERCHAN_SENDKEY` | 否 | Server酱推送，见[消息推送](#消息推送) |
+| `SERVERCHAN_SENDKEY` | 否 | Server酱 推送，见[消息推送](#消息推送) |
 | `GLADOS_EXCHANGE_PLAN` | 否 | `plan100` / `plan200` / `plan500`，见[积分兑换](#积分兑换) |
 | `GLADOS_VERBOSE` | 否 | `true` / `1` / `yes` 输出详细日志 |
 
-## 配置 GLADOS_COOKIES
+## ⚙️配置 GLADOS_COOKIES
 
 必须是 **JSON 数组**，每个账号一个对象，只允许下面四个字段：
 
 ```json
 [
   {
-    "name": "主号",
+    "name": "大号",
     "origin": "glados.cloud",
     "cookie": "koa:sess=...; koa:sess.sig=...; gld:sess=...",
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ... Safari/537.36"
   },
-  {"cookie": "koa:sess=...; koa:sess.sig=..."}
+  {
+    "name": "小号",
+    "origin": "railgun.info",
+    "cookie": "koa:sess=...; koa:sess.sig=..."
+  },
+  {
+    "name": "账号3",
+    "cookie": "gld:sess=..."
+  }
 ]
 ```
 
@@ -65,7 +77,7 @@
 
 **如何获取**
 
-签到页按 `F12` → `Network` → 刷新 → 任一请求 → `Request Headers`，复制 `Cookie` 与 `User-Agent` 的完整值。
+签到页按 `F12` → `Network` → 刷新 → 选中任一请求 → `Request Headers`，复制 `Cookie` 与 `User-Agent` 的完整值。
 
 **探测顺序**（不填 `origin` 时按此顺序，命中即停）
 
@@ -73,7 +85,7 @@
 
 探测用短超时快速筛一遍；只对**网络无响应**的域名再试一次，返回「没有权限」的不重试。
 
-## 积分兑换
+## 🎁积分兑换
 
 设置 `GLADOS_EXCHANGE_PLAN` 后才执行，且只在签到**成功 / 重复**时兑换。
 
@@ -85,7 +97,7 @@
 
 不填或填非法值则不兑换；余额不足时接口返回失败，不会扣成负数。
 
-## 消息推送
+## 📣消息推送
 
 | 后端 | Secret | 获取密钥 |
 | --- | --- | --- |
@@ -98,8 +110,8 @@
 
 ```text
 GLaDOS 签到 · 成功 1 · 失败 1 · 重复 1
-#1  主号  ✅ 签到成功  glados.cloud  获得 20 积分 · 剩余 3556 天 · 总 409 积分
-#2  小号  🔄 重复签到  railgun.info  获得 0 积分 · 剩余 5 天 · 总 528 积分  ⚠️ 仅剩 5 天，建议及时续期或配置自动兑换
+#1  大号  ✅ 签到成功  glados.cloud  获得 20 积分 · 剩余 48 天 · 总 409 积分
+#2  小号  🔄 重复签到  railgun.info  获得 0 积分 · 剩余 23 天 · 总 528 积分
 #3  账号3  🔴 签到失败  未探测  获得 0 积分 · 剩余 None 天 · 总 None 积分
 ```
 
@@ -111,19 +123,25 @@ GLaDOS 签到 · 成功 1 · 失败 1 · 重复 1
 
 账号名列只在**多账号**时出现。
 
-## 安全与隐私
+## ⏰修改运行时间
 
-> [!IMPORTANT]
-> Cookie 等同登录凭证，拿到它就能以你的身份操作该账号。请只放在自己仓库的 Secret 中。
+默认每天 **09:18 / 12:18**（北京时间），由 `.github/workflows/gladosCheck.yml` 的 `schedule` 控制：
 
-- **凭证只走 Secret**：脚本从环境变量读取，不写入任何文件、不落盘、不打印完整值。
-- **日志自动脱敏**：`koa:*` / `gld:*` 会话字段、签名与 `Bearer` 凭证统一替换为 `[REDACTED]`，便于贴日志排查。
-- **避免公开传播**：不要把 Cookie 贴到 Issue、PR、截图或聊天记录里；需要求助时先删掉实际值。
-- **权限最小化**：workflow 只需 `contents: read` 与 `actions: write`，不涉及写仓库或提权。
-- **第三方 Action**：仓库引用了 `liskin/gh-workflow-keepalive`（保活）和 `Mattraks/delete-workflow-runs`（清理运行记录）。介意的话可删除这两个步骤，不影响签到。
-- **怀疑泄露怎么办**：立刻在 GLaDOS 站点退出登录使会话失效，再重新登录并更新 Secret。
+```yaml
+schedule:
+  - cron: '18 9,12 * * *'
+    timezone: 'Asia/Shanghai'
+```
 
-## 问题排查
+改 `cron` 即可调整时间；`timezone` 让 GitHub 按北京时间解释。例如只保留早上一次：
+
+```yaml
+schedule:
+  - cron: '18 9 * * *'
+    timezone: 'Asia/Shanghai'
+```
+
+## 🔍问题排查
 
 **正常日志**
 
@@ -147,51 +165,109 @@ GLaDOS 签到 · 成功 1 · 失败 1 · 重复 1
 
 > 推送里出现 `总 None 积分` 只表示本次没取到总积分（该接口偶发较慢），与签到成功与否无关；想确认可手动重跑一次。
 
-## 常见问题（FAQ）
+## ❓常见问题（FAQ）
 
-**Q：一次运行多久？**
+<details>
+<summary><strong>Q：一次运行多久？</strong></summary>
+
 正常几秒到几十秒。单轮预算 300 秒（约 5 分钟），超出会跳过剩余账号。
 
-**Q：Cookie 多久会过期？**
+</details>
+
+<details>
+<summary><strong>Q：Cookie 多久会过期？</strong></summary>
+
 没有固定期限。退出登录、改密码、服务端会话策略调整都可能让它提前失效。出现「候选域名均返回没有权限」或 `code=-2` 时，重新登录并更新 `GLADOS_COOKIES` 即可。
 
-**Q：支持多个账号吗？**
+</details>
+
+<details>
+<summary><strong>Q：支持多个账号吗？</strong></summary>
+
 支持，数量不限，在 JSON 数组里多写几项即可。重复的 Cookie 会自动去重，不会重复签到。
 
-**Q：需要标注每条 Cookie 属于哪个域名吗？**
-不需要，脚本会自动探测。填 `origin` 的好处是少发几个探测请求、日志更清楚。注意**各站 Cookie 通常不互通**，每条 Cookie 必须来自它真正登录的那个站点。
+</details>
 
-**Q：填错 `origin` 会怎样？**
+<details>
+<summary><strong>Q：需要标注每条 Cookie 属于哪个域名吗？</strong></summary>
+
+不需要，脚本会自动探测。填 `origin` 的好处是少发几个探测请求、日志更清楚。注意**各站 Cookie 通常不互通**，每条 Cookie 必须来自它真正登录的站点。
+
+</details>
+
+<details>
+<summary><strong>Q：填错 <code>origin</code> 会怎样？</strong></summary>
+
 不会失败。`origin` 只是**优先尝试**：命中就直接签到，返回「没有权限」则自动回退遍历全部 8 个内置域名。
 
-**Q：多账号时怎么区分日志是哪个账号？**
-不填 `name` 时按顺序自动命名，显示 `🍪[账号1]`、`🍪[账号2]`；填了则显示 `🍪[1:主号]`、`🍪[2:小号]`，序号与总结里的 `#1` `#2` 对应。
+</details>
 
-**Q：一个账号会跑几个任务？**
+<details>
+<summary><strong>Q：多账号时怎么区分日志是哪个账号？</strong></summary>
+
+不填 `name` 时按顺序自动命名，显示 `🍪[账号1]`、`🍪[账号2]`；填了则显示 `🍪[1:大号]`、`🍪[2:小号]`、`🍪[3:账号3]`，序号与总结里的 `#1` `#2` `#3` 对应。
+
+</details>
+
+<details>
+<summary><strong>Q：一个账号会跑几个任务？</strong></summary>
+
 一个。脚本先探测域名、再只在该域名签到，任务数等于账号数。
 
-**Q：「重复签到」算成功还是失败？**
+</details>
+
+<details>
+<summary><strong>Q：「重复签到」算成功还是失败？</strong></summary>
+
 算正常结果。表示当天已签过，服务端返回 `code=1`，总结里单独计数为「重复」，不计入失败。
 
-**Q：遇到设备不匹配（code=4）怎么办？**
+</details>
+
+<details>
+<summary><strong>Q：遇到设备不匹配（code=4）怎么办？</strong></summary>
+
 GLaDOS 会校验 UA 与登录设备。填了 `user-agent` 就原样使用；没填则用默认 UA，失败时按 `loginDevice` 自动重试一次；仍失败会提示补充 `user-agent` —— 填入**提取 Cookie 时那个浏览器**的 UA 即可。
 
-**Q：Actions 是绿色的，但没收到通知？**
+</details>
+
+<details>
+<summary><strong>Q：Actions 是绿色的，但没收到通知？</strong></summary>
+
 先确认对应 Secret 拼写正确（日志会打印「已配置 N 个后端」）。注意 Server酱 返回 `code=0` 只代表**任务已入队**，不代表已送达；长时间未收到请检查该 SendKey 是否已绑定微信。
 
-**Q：公开仓库的定时任务会自己停掉吗？**
+</details>
+
+<details>
+<summary><strong>Q：公开仓库的定时任务会自己停掉吗？</strong></summary>
+
 会。GitHub 对公开仓库有「连续 60 天无活动则停用 schedule」的规则。本仓库内置 keepalive 步骤定期产生活动，但并非 100% 保证；发现停跑去 Actions 页面重新启用即可。
 
-**Q：配置了兑换会不会把积分乱花掉？**
+</details>
+
+<details>
+<summary><strong>Q：配置了兑换会不会把积分乱花掉？</strong></summary>
+
 按 `GLADOS_EXCHANGE_PLAN` 指定档位执行，**不填就不兑换**，且只在签到成功/重复时才兑换。余额不足时接口返回失败，不会扣成负数。
 
-**Q：签到失败会让 Actions 变红吗？**
+</details>
+
+<details>
+<summary><strong>Q：签到失败会让 Actions 变红吗？</strong></summary>
+
 分两种情况：**配置错误**（未填 Cookie、JSON 格式非法）会以非 0 退出码结束，工作流变红；**业务失败**（Cookie 失效 `code=-2`、服务端 5xx）不会变红，避免偶发失败天天误报。因此业务失败需要自己关注推送或日志。
 
-**Q：「剩余 0 天」是怎么回事？**
+</details>
+
+<details>
+<summary><strong>Q：「剩余 0 天」是怎么回事？</strong></summary>
+
 账号当天到期，签到本身仍会成功。建议配置 `GLADOS_EXCHANGE_PLAN` 用积分续期，详见[积分兑换](#积分兑换)。
 
-**Q：可以本地运行吗？**
+</details>
+
+<details>
+<summary><strong>Q：可以本地运行吗？</strong></summary>
+
 可以，用于调试。安装依赖后设置环境变量再执行：
 
 ```bash
@@ -202,20 +278,24 @@ python checkin.py
 
 Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 
+</details>
+
 ---
 
-## 文件结构
+## 📁文件结构
 
 ```text
 .
 ├── checkin.py                    # 主程序：账号模型 / API / 配置 / 报告 / 推送
 ├── logging_config.py             # 日志配置（北京时间、级别短标签、脱敏）
 ├── requirements.txt              # 依赖
+├── README.md                     # 说明文档
+├── LICENSE                       # MIT 许可
 └── .github/workflows/
     └── gladosCheck.yml           # Actions 定时任务
 ```
 
-## 更新日志
+## 📝更新日志
 
 **2026-01**
 
@@ -242,18 +322,17 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 - 优化失败原因提示；签到被拒、兑换未完成等场景给出可执行建议。
 - 日志自动脱敏：`koa:*` / `gld:*` / Bearer → `[REDACTED]`。
 
-## Star 趋势
+## ⭐Star 趋势
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Devilstore/Glados-Railgun-checkin&type=Date&legend=top-left)](https://star-history.com/#Devilstore/Glados-Railgun-checkin&type=Date)
 
 ---
 
-## 声明
+## 📄声明
 
 - 不保证稳定运行，接口与风控策略可能随时调整。
 - 只调用与网页端一致的公开 API，不绕过验证码或风控。
 - 使用风险自负；因使用本工具导致的账号风控、限权或封禁由使用者自行承担。
-- 账号凭据的保管与防护见[安全与隐私](#安全与隐私)。
 - 本项目以 [MIT](LICENSE) 发布。
 
 如果这个项目对你有帮助，欢迎点个 ⭐ Star。
