@@ -23,7 +23,7 @@
 > [!TIP]
 > **还没有 GLaDOS 账号？**
 >
-> 用[**邀请链接注册**](https://glados.space/landing/0A58E-NV28S-6U3QV-33VMG) 享 9 折优惠， 邀请码 [`0A58E-NV28S-6U3QV-33VMG`](https://0a58e-nv28s-6u3qv-33vmg.glados.space) · 优惠码 [`DEVILSTORE`](https://0a58e-nv28s-6u3qv-33vmg.glados.space)
+> 用[**邀请链接注册**](https://glados.space/landing/0A58E-NV28S-6U3QV-33VMG) 享 9 折优惠，邀请码 [`0A58E-NV28S-6U3QV-33VMG`](https://0a58e-nv28s-6u3qv-33vmg.glados.space) · 优惠码 [`DEVILSTORE`](https://0a58e-nv28s-6u3qv-33vmg.glados.space)
 
 1. Fork 本仓库。
 2. 在自己的仓库进入 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，至少添加 `GLADOS_COOKIES`。
@@ -38,7 +38,7 @@
 | `GLADOS_EXCHANGE_PLAN` | 否 | `plan100` / `plan200` / `plan500`，见[积分兑换](#积分兑换) |
 | `GLADOS_VERBOSE` | 否 | `true` / `1` / `yes` 输出详细日志 |
 
-## ⚙️配置 GLADOS_COOKIES
+## 🔧配置 GLADOS_COOKIES
 
 必须是 **JSON 数组**，每个账号一个对象，只允许下面四个字段：
 
