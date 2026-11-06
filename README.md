@@ -8,6 +8,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![GLaDOS Check-in](https://github.com/Devilstore/Glados-Railgun-checkin/actions/workflows/gladosCheck.yml/badge.svg?branch=master)](https://github.com/Devilstore/Glados-Railgun-checkin/actions/workflows/gladosCheck.yml)
+[![Last commit](https://img.shields.io/github/last-commit/Devilstore/Glados-Railgun-checkin?branch=master)](https://github.com/Devilstore/Glados-Railgun-checkin/commits/master)
 
 [快速开始](#快速开始) · [账号配置](#配置-glados_cookies) · [积分兑换](#积分兑换) · [消息推送](#消息推送) · [问题排查](#问题排查) · [常见问题](#常见问题faq)
 
@@ -27,7 +29,7 @@
 
 1. Fork 本仓库。
 2. 在自己的仓库进入 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，至少添加 `GLADOS_COOKIES`。
-3. 打开 `Actions` → `auto check` → `Run workflow` 手动跑一次，看到「签到成功」或「重复签到」即完成。
+3. 打开 `Actions` → `GLaDOS Check-in` → `Run workflow` 手动跑一次，看到「签到成功」或「重复签到」即完成。
 4. 之后每天 **09:18 / 12:18**（北京时间）自动运行。
 
 | Secret | 必填 | 说明 |

@@ -1,4 +1,4 @@
-name: auto check
+name: GLaDOS Check-in
 
 on:
   workflow_dispatch:
