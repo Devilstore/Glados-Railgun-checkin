@@ -64,7 +64,7 @@
 
 | 字段 | 必填 | 说明 |
 | --- | :---: | --- |
-| `cookie` | **是** | 完整 Cookie，含 `koa:sess` 或 `gld:sess`，不能为空 |
+| `cookie` | **是** | 完整 Cookie；新版建议同时包含 `gld:sess` 与 `gld:sess.sig` |
 | `name` | 否 | 备注名，不填显示 `账号1` |
 | `origin` | 否 | Cookie 所属域名，不填自动探测 |
 | `user-agent` | 否 | 提取 Cookie 时的浏览器 UA，建议填写 |
@@ -160,6 +160,7 @@ schedule:
 | `设备平台不匹配(loginDevice=…)` | UA 与登录设备不一致 → 补充 `user-agent` 字段 |
 | `签到被拒：please checkin via …` | token 与域名不符（多为服务端规则变更）→ 确认 Cookie 来源域名 |
 | `无权限(code=-2)` | 该 Cookie 失效或账号风控 |
+| `Automated check-in detected` / 只给 1 积分 | GLaDOS 判定为自动签到；脚本已适配 challenge，但 TLS/HTTP 指纹、IP、设备等仍可能被识别 → 手动签到或使用官方客户端 |
 | `运行超出预算` | 单轮超时，剩余账号被跳过 → 下轮或手动重跑 |
 | `积分请求失败 / 响应解析失败 / 格式异常 / 字段无法解析` | 查总积分失败 → 推送里显示 `总 None 积分`，**不影响签到结果**，可忽略 |
 
@@ -321,6 +322,7 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 - GLADOS_COOKIES 格式改为 JSON 数组，支持 `name` / `origin` / `cookie` / `user-agent`；旧 `&` 格式仍兼容。
 - 优化失败原因提示；签到被拒、兑换未完成等场景给出可执行建议。
 - 日志自动脱敏：`koa:*` / `gld:*` / Bearer → `[REDACTED]`。
+- 加入 challenge 校验机制；获取失败时回退旧协议。
 
 ## ⭐Star 趋势
 
@@ -331,7 +333,7 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 ## 📄声明
 
 - 不保证稳定运行，接口与风控策略可能随时调整。
-- 只调用与网页端一致的公开 API，不绕过验证码或风控。
+- 只调用网页端使用的公开 API，不破解验证码；服务端风控仍可能拒绝或降权。
 - 使用风险自负；因使用本工具导致的账号风控、限权或封禁由使用者自行承担。
 - 本项目以 [MIT](LICENSE) 发布。
 

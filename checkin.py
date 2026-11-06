@@ -1,4 +1,5 @@
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -41,6 +42,7 @@ class APIEndpoint:
     """API 路径"""
 
     CHECKIN = "/api/user/checkin"
+    CHECKIN_CHALLENGE = "/api/user/checkin/challenge"
     STATUS = "/api/user/status"
     POINTS = "/api/user/points"
     EXCHANGE = "/api/user/exchange"
@@ -94,6 +96,10 @@ POINTS_TIMEOUT = (10, 30)
 
 """单次运行总预算（秒）。到期后跳过剩余账号，避免 Actions 长时间挂起"""
 RUN_BUDGET_SECONDS = 300
+
+"""签到 challenge 的 proof 后缀与最小等待（与网页端当前实现一致）"""
+CHALLENGE_SUFFIX = "glados-observe-v1"
+CHALLENGE_DELAY_SECONDS = 2.5
 
 """Cookie 中标识登录态的会话字段"""
 SESSION_FIELDS = ("koa:sess=", "gld:sess=")
@@ -868,6 +874,7 @@ class API:
         user_agent: Optional[str] = None,
         timeout: Optional[Tuple[int, int]] = None,
         retry: bool = True,
+        json_body: bool = False,
     ) -> Optional[requests.Response]:
         """发送请求。retry=False 用于非幂等/非关键请求，跳过 adapter 重试。"""
         url = f"https://{self.domain}{path}"
@@ -878,7 +885,10 @@ class API:
         try:
             session = self.session if retry else self._no_retry_session
             if method.upper() == "POST":
-                response = session.post(url, headers=headers, data=data, timeout=timeout or self.timeout)
+                if json_body:
+                    response = session.post(url, headers=headers, json=data, timeout=timeout or self.timeout)
+                else:
+                    response = session.post(url, headers=headers, data=data, timeout=timeout or self.timeout)
             elif method.upper() == "GET":
                 response = session.get(url, headers=headers, timeout=timeout or self.timeout)
             else:
@@ -909,9 +919,52 @@ class API:
         snippet = "（HTML 响应，已省略）" if is_html else body[:300] + ("..." if len(body) > 300 else "")
         self.log(LogEmoji.WARNING, f"向 {url} 请求失败，状态码 {status}。响应: {snippet}", force=True)
 
+    def _checkin_challenge(self, user_agent: str) -> Optional[Tuple[str, str]]:
+        """获取签到 challenge 并计算 proof；失败返回 None，由调用方回退旧协议。"""
+        response = self.request("GET", APIEndpoint.CHECKIN_CHALLENGE, user_agent=user_agent)
+        if response is None:
+            return None
+        try:
+            data = response.json()
+        except ValueError:
+            self.log(LogEmoji.WARNING, "签到 challenge 响应解析失败，按旧协议提交", force=True)
+            return None
+        if not isinstance(data, dict) or data.get("code") != 0:
+            self.log(LogEmoji.WARNING, f"签到 challenge 响应异常: {data}", force=True)
+            return None
+
+        nonce = data.get("nonce")
+        if not nonce:
+            self.log(LogEmoji.WARNING, "签到 challenge 缺少 nonce，按旧协议提交", force=True)
+            return None
+
+        # challenge 到手后等待间隔后再提交
+        time.sleep(CHALLENGE_DELAY_SECONDS)
+        proof = hashlib.sha256(f"{nonce}.{CHALLENGE_SUFFIX}".encode()).hexdigest()
+        self.log(LogEmoji.INFO, "已获取签到 challenge")
+        return str(nonce), proof
+
     def _checkin_attempt(self, user_agent: str) -> Optional[Dict]:
         """发起一次签到请求并返回解析后的响应体；请求失败或响应非 JSON 返回 None"""
-        response = self.request("POST", APIEndpoint.CHECKIN, data={"token": self.domain}, user_agent=user_agent)
+        payload: Dict[str, str] = {"token": self.domain}
+        challenge = self._checkin_challenge(user_agent)
+        if challenge:
+            nonce, proof = challenge
+            payload.update({"nonce": nonce, "proof": proof})
+        else:
+            self.log(
+                LogEmoji.WARNING,
+                "未取得签到 challenge，按旧协议提交（可能只获得 1 积分）",
+                force=True,
+            )
+
+        response = self.request(
+            "POST",
+            APIEndpoint.CHECKIN,
+            data=payload,
+            user_agent=user_agent,
+            json_body=bool(challenge),
+        )
         if response is None:
             return None
         try:
