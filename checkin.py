@@ -635,13 +635,17 @@ class Accounts:
 
 
 def earned_points(raw: Dict) -> int:
-    """本次签到所得积分：优先签到记录 list[0].change（顶层 points 未必是本次所得）"""
+    """本次签到所得积分"""
+    points = to_int(raw.get("points"))
+    if points is not None:
+        return points
+
     records = raw.get("list")
     if isinstance(records, list) and records and isinstance(records[0], dict):
         change = to_int(records[0].get("change"))
         if change is not None:
             return change
-    return to_int(raw.get("points", 0)) or 0
+    return 0
 
 
 def log_reject(code: int, raw: Dict, message: str, domain: str, log: Callable[..., None], ua_hint: str = "") -> None:
@@ -675,25 +679,49 @@ def parse_checkin(raw: Optional[Dict], domain: str, log: Callable[..., None], ua
             log(LogEmoji.ERROR, f"签到响应格式异常（{type(raw).__name__}）", True)
         return result
 
-    code = raw.get("code", -2)
+    code = raw.get("code")
+    if isinstance(code, str) and code.strip().isdigit():
+        code = int(code.strip())
     message = str(raw.get("message", "无消息字段"))
     points = earned_points(raw)
 
-    # token 与域名不一致时服务端返回 "please checkin via https://..."，此响应 code 可能为 0，
-    # 必须优先拦截，否则会被误判为签到成功。
+    # token 与域名不一致时服务端返回 "please checkin via https://..."，此响应 code 可能为 0
     if "please checkin via" in message.lower():
         log(LogEmoji.ERROR, f"签到被拒：{message}（服务端认定签到域名不符）", True)
         return result
 
-    if code == CheckinStatus.SUCCESS.value:
+    # ① 设备不匹配
+    if code == 4 and raw.get("reason") == "device-mismatch":
+        log_reject(4, raw, message, domain, log, ua_hint)
+        return result
+
+    # ②~④ ：repeated「已签到」，code==0 成功
+    repeated = raw.get("repeated")
+    if isinstance(repeated, bool):
+        if repeated:
+            status = CheckinStatus.REPEAT
+        else:
+            status = CheckinStatus.SUCCESS if code == CheckinStatus.SUCCESS.value else CheckinStatus.FAILURE
+    elif code == CheckinStatus.SUCCESS.value:
+        status = CheckinStatus.SUCCESS
+    elif code == CheckinStatus.REPEAT.value:
+        status = CheckinStatus.REPEAT
+    elif raw.get("checkedIn") is True:
+        status = CheckinStatus.REPEAT
+    else:
+        status = CheckinStatus.FAILURE
+
+    if status is CheckinStatus.SUCCESS:
         log(LogEmoji.SUCCESS, f"{{ code : {code}, points : {points}, message : {message} }}")
         result.points = points
         result.code = CheckinStatus.SUCCESS
-    elif code == CheckinStatus.REPEAT.value:
-        log(LogEmoji.REPEAT, f"{{ code : {code}, message : {message} }}", True)
+    elif status is CheckinStatus.REPEAT:
+        log(LogEmoji.REPEAT, f"{{ code : {code}, repeated : {repeated}, message : {message} }}", True)
         result.code = CheckinStatus.REPEAT
-    else:
+    elif isinstance(code, int) and not isinstance(code, bool):
         log_reject(code, raw, message, domain, log, ua_hint)
+    else:
+        log(LogEmoji.ERROR, f"签到响应缺少 code 字段，无法判定结果（message={message}）", True)
     return result
 
 
@@ -1109,10 +1137,7 @@ class Report:
             r = entry.result
             emoji, status = STATUS_META.get(r.code, (LogEmoji.ERROR, "签到失败"))
             name_cell = f"{entry.name or '未命名'}  " if show_name else ""
-            line = (
-                f"#{entry.index}  {name_cell}{emoji} {status}  {r.domain}  "
-                f"获得 {r.points} 积分 · 剩余 {format_days(r.days)} · 总 {format_points(r.points_total)}"
-            )
+            line = f"#{entry.index}  {name_cell}{emoji} {status}  {r.domain}  " f"获得 {r.points} 积分 · 剩余 {format_days(r.days)} · 总 {format_points(r.points_total)}"
             if r.exchange:
                 line += f" · {r.exchange}"
             if r.note:
