@@ -37,6 +37,8 @@
 | `GLADOS_COOKIES` | **是** | 账号列表，固定 JSON 数组，见[账号配置](#配置-glados_cookies) |
 | `PUSHDEER_SENDKEY` | 否 | PushDeer 推送，见[消息推送](#消息推送) |
 | `SERVERCHAN_SENDKEY` | 否 | Server酱 推送，见[消息推送](#消息推送) |
+| `TELEGRAM_BOT_TOKEN` | 否 | Telegram Bot Token，见[消息推送](#消息推送) |
+| `TELEGRAM_CHAT_ID` | 否 | Telegram 接收消息的 Chat ID，见[消息推送](#消息推送) |
 | `GLADOS_EXCHANGE_PLAN` | 否 | `plan100` / `plan200` / `plan500`，见[积分兑换](#积分兑换) |
 | `GLADOS_VERBOSE` | 否 | `true` / `1` / `yes` 输出详细日志 |
 
@@ -105,8 +107,11 @@
 | --- | --- | --- |
 | PushDeer | `PUSHDEER_SENDKEY` | [pushdeer.com](https://www.pushdeer.com/product.html) 下载 App，在 App 内获取 pushkey |
 | Server酱 | `SERVERCHAN_SENDKEY` | [sct.ftqq.com](https://sct.ftqq.com/) 微信扫码登录，在页面获取 SendKey |
+| Telegram Bot | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | 在 Telegram 联系 [@BotFather](https://t.me/BotFather) 创建 Bot 获取 Token；向 Bot 发消息后，通过 [@userinfobot](https://t.me/userinfobot) 获取 Chat ID |
 
-两个可单独或同时配置（都发，任一成功即视为成功）；都不配则跳过推送，不影响签到。
+各后端可单独或同时配置（都发，任一成功即视为成功）；Telegram 必须同时配置 Bot Token 和 Chat ID。都不配则跳过推送，不影响签到。
+
+Telegram Bot 创建后，需先在 Telegram 中向 Bot 发送 `/start`，否则 Bot 通常无法主动发送私聊消息。群组通知可将 Bot 加入群组，并使用该群组的 Chat ID。
 
 ### 推送效果
 
@@ -236,7 +241,7 @@ GLaDOS 会校验 UA 与登录设备。填了 `user-agent` 就原样使用；没�
 <details>
 <summary><strong>Q：Actions 是绿色的，但没收到通知？</strong></summary>
 
-先确认对应 Secret 拼写正确（日志会打印「已配置 N 个后端」）。注意 Server酱 返回 `code=0` 只代表**任务已入队**，不代表已送达；长时间未收到请检查该 SendKey 是否已绑定微信。
+先确认对应 Secret 拼写正确（日志会打印「已配置 N 个后端」）。Telegram 必须同时配置 `TELEGRAM_BOT_TOKEN` 与 `TELEGRAM_CHAT_ID`，且首次私聊前要先发送 `/start`。注意 Server酱 返回 `code=0` 只代表**任务已入队**，不代表已送达；长时间未收到请检查该 SendKey 是否已绑定微信。
 
 </details>
 
