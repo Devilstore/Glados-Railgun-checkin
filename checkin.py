@@ -16,6 +16,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from logging_config import init_logger
+from solver import SolverError, build_solver
 
 # --------------------------------------------------------------------------- #
 # 常量与枚举
@@ -103,8 +104,14 @@ CHALLENGE_DELAY_SECONDS = 2.5
 
 """Cloudflare/Turnstile 限制导致积分不完整时的降级建议"""
 EXTENSION_FALLBACK_HINT = (
-    "检测到 Cloudflare/Turnstile 限制，Python 可能无法获得完整积分；"
-    "建议改用浏览器扩展「GLaDOS 自动签到」，在真实浏览器中完成签到。"
+    "检测到 Cloudflare/Turnstile 限制；"
+    "可配置 CAPTCHA_SOLVER_KEY 使用打码平台，或改用浏览器扩展「GLaDOS 自动签到」。"
+)
+
+"""签到需要 Turnstile token 但未配置打码平台时的提示"""
+SOLVER_REQUIRED_HINT = (
+    "本次签到需要 Cloudflare Turnstile token，但未配置打码平台；"
+    "设置环境变量 CAPTCHA_SOLVER_KEY（云码）或 CAPTCHA_SOLVER_KEY + CAPTCHA_SOLVER_PROVIDER=capsolver 后重试。"
 )
 
 """Cookie 中标识登录态的会话字段"""
@@ -361,7 +368,14 @@ class CookieEntry:
             self._log_result()
             return self.result
 
-        with API(domain, self.cookie, label=self.label, verbose=config.verbose, user_agent=self.user_agent) as api:
+        with API(
+            domain,
+            self.cookie,
+            label=self.label,
+            verbose=config.verbose,
+            user_agent=self.user_agent,
+            solver=config.solver,
+        ) as api:
             self.result = self._sign_in(api, domain, days, config)
 
         self._log_result()
@@ -766,6 +780,7 @@ class API:
         verbose: bool = False,
         probing: bool = False,
         user_agent: str = "",
+        solver: Optional[Any] = None,
     ):
         self.domain = domain
         self.cookie = cookie
@@ -773,6 +788,8 @@ class API:
         self.verbose = verbose
         self.probing = probing
         self.user_agent = (user_agent or "").strip()
+        self.solver = solver
+        self.solver_failed = ""
         self.challenge_missing = False
         self.cloudflare_blocked = False
         self.cloudflare_hint = ""
@@ -1000,9 +1017,39 @@ class API:
         snippet = "（HTML 响应，已省略）" if is_html else body[:300] + ("..." if len(body) > 300 else "")
         self.log(LogEmoji.WARNING, f"向 {url} 请求失败，状态码 {status}。响应: {snippet}", force=True)
 
-    def _checkin_challenge(self, user_agent: str) -> Optional[Tuple[str, str]]:
-        """获取签到 challenge 并计算 proof；失败返回 None，由调用方回退旧协议。"""
+    def _solve_turnstile(self, sitekey: str, nonce: str, user_agent: str) -> str:
+        """用打码平台为当前 challenge 换一个 Turnstile token；失败返回空串。"""
+        if self.solver is None:
+            self.log(LogEmoji.WARNING, SOLVER_REQUIRED_HINT, force=True)
+            return ""
+
+        provider = getattr(self.solver, "name", "solver")
+        self.log(LogEmoji.INFO, f"请求打码平台（{provider}）…", force=True)
+        started = time.monotonic()
+        try:
+            token = self.solver.solve(
+                sitekey,
+                page_url=f"https://{self.domain}/console/checkin",
+                action="checkin",
+                cdata=nonce,
+                user_agent=user_agent,
+            )
+        except SolverError as e:
+            self.solver_failed = str(e)
+            self.log(LogEmoji.ERROR, f"打码失败：{e}", force=True)
+            return ""
+
+        self.log(
+            LogEmoji.SUCCESS,
+            f"打码完成，耗时 {time.monotonic() - started:.1f}s，token {len(token)} 字符",
+            force=True,
+        )
+        return token
+
+    def _checkin_challenge(self, user_agent: str) -> Optional[Dict[str, str]]:
+        """获取签到 challenge；需要 Turnstile 时顺带打码。失败返回 None，由调用方回退旧协议。"""
         self.challenge_missing = False
+        started = time.monotonic()
         response = self.request("GET", APIEndpoint.CHECKIN_CHALLENGE, user_agent=user_agent)
         if response is None:
             self.challenge_missing = True
@@ -1042,19 +1089,33 @@ class API:
             )
             return None
 
-        # challenge 到手后等待间隔后再提交
-        time.sleep(CHALLENGE_DELAY_SECONDS)
-        proof = hashlib.sha256(f"{nonce}.{CHALLENGE_SUFFIX}".encode()).hexdigest()
+        nonce = str(nonce)
+        challenge: Dict[str, str] = {
+            "nonce": nonce,
+            "proof": hashlib.sha256(f"{nonce}.{CHALLENGE_SUFFIX}".encode()).hexdigest(),
+        }
+
+        # 2026-11-12 起 challenge 会带 Turnstile sitekey，签到必须同时提交 token。
+        sitekey = str(data.get("turnstile") or "").strip()
+        if sitekey:
+            token = self._solve_turnstile(sitekey, nonce, user_agent)
+            if token:
+                challenge["tsState"] = "ok"
+                challenge["turnstile"] = token
+
+        # challenge 到手后等待间隔再提交；打码耗时通常已超过这个间隔
+        remaining = CHALLENGE_DELAY_SECONDS - (time.monotonic() - started)
+        if remaining > 0:
+            time.sleep(remaining)
         self.log(LogEmoji.INFO, "已获取签到 challenge")
-        return str(nonce), proof
+        return challenge
 
     def _checkin_attempt(self, user_agent: str) -> Optional[Dict]:
         """发起一次签到请求并返回解析后的响应体；请求失败或响应非 JSON 返回 None"""
         payload: Dict[str, str] = {"token": self.domain}
         challenge = self._checkin_challenge(user_agent)
         if challenge:
-            nonce, proof = challenge
-            payload.update({"nonce": nonce, "proof": proof})
+            payload.update(challenge)
         else:
             self.log(
                 LogEmoji.WARNING,
@@ -1091,9 +1152,13 @@ class Config:
     ENV_COOKIES = "GLADOS_COOKIES"
     ENV_EXCHANGE_PLAN = "GLADOS_EXCHANGE_PLAN"
     ENV_VERBOSE = "GLADOS_VERBOSE"
+    ENV_SOLVER_PROVIDER = "CAPTCHA_SOLVER_PROVIDER"
+    ENV_SOLVER_KEY = "CAPTCHA_SOLVER_KEY"
+    ENV_SOLVER_PROXY = "CAPTCHA_SOLVER_PROXY"
 
     DEFAULT_EXCHANGE_PLAN = "none"
     DEFAULT_VERBOSE = False
+    DEFAULT_SOLVER_PROVIDER = "jfbym"
 
     def __init__(self, env: Optional[Dict[str, str]] = None):
         self.env = env if env is not None else os.environ
@@ -1102,6 +1167,10 @@ class Config:
         self.accounts = Accounts()
         self.exchange_plan = self.DEFAULT_EXCHANGE_PLAN
         self.verbose = self.DEFAULT_VERBOSE
+        self.solver_provider = self.DEFAULT_SOLVER_PROVIDER
+        self.solver_key = ""
+        self.solver_proxy = ""
+        self.solver: Optional[Any] = None
         self.load_error = ""
         self._load()
 
@@ -1121,6 +1190,7 @@ class Config:
         self._load_verbose()
         self._load_accounts()
         self._load_exchange_plan()
+        self._load_solver()
 
         logger.info(f"{LogEmoji.INFO} 共加载了 {len(self.accounts)} 个账号用于签到。")
         for account in self.accounts:
@@ -1174,6 +1244,22 @@ class Config:
             self.verbose = False
         else:
             logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_VERBOSE}' 的值 '{value}' 无效，将使用默认值 {self.DEFAULT_VERBOSE}。")
+
+    def _load_solver(self) -> None:
+        """打码平台是可选能力：未配置时保持原行为，遇到 Turnstile 会提示怎么配。"""
+        self.solver_provider = self._get(self.ENV_SOLVER_PROVIDER).lower() or self.DEFAULT_SOLVER_PROVIDER
+        self.solver_key = self._get(self.ENV_SOLVER_KEY)
+        self.solver_proxy = self._get(self.ENV_SOLVER_PROXY)
+        if not self.solver_key:
+            return
+        try:
+            self.solver = build_solver(self.solver_provider, self.solver_key, self.solver_proxy)
+        except SolverError as e:
+            logger.error(f"{LogEmoji.ERROR} 打码平台配置无效：{e}")
+            return
+        if self.solver is not None:
+            proxy_note = "，已配置代理" if self.solver_proxy else ""
+            logger.info(f"{LogEmoji.SUCCESS} 启用打码平台：{getattr(self.solver, 'name', self.solver_provider)}{proxy_note}")
 
 
 # --------------------------------------------------------------------------- #
