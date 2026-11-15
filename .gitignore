@@ -2,25 +2,38 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
-# IDE
+# 环境变量与账号凭据
+.env
+.env.*
+!.env.example
+
+# 扩展打包产物 / 签名文件
+glados-checkin-extension-*.zip
+extension/*.zip
+*.crx
+*.pem
+
+# 日志与临时文件
+logs/
+*.log
+tmp/
+*.tmp
+
+# IDE / OS
 .vscode/
 .idea/
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Environment variables
-.env
-.env.local
-.env.*.local
-
-# Logs
-logs
-*.log
-
-# Build
+# 构建
 build/
 dist/
 *.egg-info/

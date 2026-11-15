@@ -101,6 +101,12 @@ RUN_BUDGET_SECONDS = 300
 CHALLENGE_SUFFIX = "glados-observe-v1"
 CHALLENGE_DELAY_SECONDS = 2.5
 
+"""Cloudflare/Turnstile 限制导致积分不完整时的降级建议"""
+EXTENSION_FALLBACK_HINT = (
+    "检测到 Cloudflare/Turnstile 限制，Python 可能无法获得完整积分；"
+    "建议改用浏览器扩展「GLaDOS 自动签到」，在真实浏览器中完成签到。"
+)
+
 """Cookie 中标识登录态的会话字段"""
 SESSION_FIELDS = ("koa:sess=", "gld:sess=")
 
@@ -287,6 +293,7 @@ class CookieEntry:
     origin: str = ""
     user_agent: str = ""  # 提取 Cookie 时的浏览器 UA；空表示用默认 UA
     verbose: bool = False
+    cloudflare_blocked: bool = False
     result: CheckinResult = field(default_factory=CheckinResult)
 
     # ---------------- 构建 ----------------
@@ -341,6 +348,8 @@ class CookieEntry:
             self.result = CheckinResult.failure(self.origin or UNPROBED)
             if budget is not None and budget.expired():
                 self.result.note = "运行超时，未完成探测"
+            elif self.cloudflare_blocked:
+                self.result.note = EXTENSION_FALLBACK_HINT
             self._log_result()
             return self.result
 
@@ -374,7 +383,15 @@ class CookieEntry:
         else:
             self.log(domain, LogEmoji.INFO, "签到未成功，跳过自动兑换")
 
-        result.note = self._expiry_note(result.days)
+        notes = []
+        expiry_note = self._expiry_note(result.days)
+        if expiry_note:
+            notes.append(expiry_note)
+        if api.cloudflare_blocked:
+            notes.append(EXTENSION_FALLBACK_HINT)
+        elif api.challenge_missing and result.points <= 1:
+            notes.append(EXTENSION_FALLBACK_HINT)
+        result.note = "；".join(notes)
         return result
 
     def _apply_exchange(self, api: "API", config: "Config", domain: str) -> str:
@@ -407,6 +424,8 @@ class CookieEntry:
             parts += [f"获得 {r.points} 积分", f"剩余 {format_days(r.days)}", f"总 {format_points(r.points_total)}"]
             if r.exchange:
                 parts.append(r.exchange)
+        if r.note:
+            parts.append(r.note)
         if r.code is CheckinStatus.SUCCESS:
             emoji = LogEmoji.SUCCESS
         elif r.code is CheckinStatus.REPEAT:
@@ -428,6 +447,8 @@ class CookieEntry:
         try:
             with API(domain, self.cookie, label=self.label, verbose=config.verbose, probing=probing, user_agent=self.user_agent) as api:
                 data = api.fetch_status()
+                if api.cloudflare_blocked:
+                    self.cloudflare_blocked = True
         except Exception as e:  # noqa: BLE001 - 单域名失败不应影响其他域名
             logger.warning(f"{LogEmoji.WARNING} 探测 {domain} 时发生异常，按网络错误处理: {e}")
             return ProbeResult.NETWORK, None, None
@@ -752,6 +773,9 @@ class API:
         self.verbose = verbose
         self.probing = probing
         self.user_agent = (user_agent or "").strip()
+        self.challenge_missing = False
+        self.cloudflare_blocked = False
+        self.cloudflare_hint = ""
 
         if probing:
             self.timeout: Tuple[int, int] = (5, 10)
@@ -931,9 +955,38 @@ class API:
             return None
         return response
 
+    @staticmethod
+    def _looks_like_cloudflare(response: requests.Response) -> bool:
+        """识别 Cloudflare / Turnstile 拦截页或速率限制。"""
+        status = response.status_code
+        if status not in (403, 429, 503):
+            return False
+        headers = response.headers
+        server = headers.get("server", "").lower()
+        mitigated = headers.get("cf-mitigated", "").lower()
+        body = (response.text or "")[:4000].lower()
+        return (
+            "cloudflare" in server
+            or "cloudflare" in body
+            or "just a moment" in body
+            or "turnstile" in body
+            or mitigated in ("challenge", "managed")
+            or status == 429
+        )
+
     def _log_failure(self, url: str, response: requests.Response) -> None:
         """非 2xx 日志：5xx 只报状态码（body 多为网关 HTML 错误页，无信息量）"""
         status = response.status_code
+        if self._looks_like_cloudflare(response):
+            self.cloudflare_blocked = True
+            self.cloudflare_hint = EXTENSION_FALLBACK_HINT
+            self.log(
+                LogEmoji.WARNING,
+                f"向 {url} 请求可能被 Cloudflare 限制（状态码 {status}）。{EXTENSION_FALLBACK_HINT}",
+                force=True,
+            )
+            return
+
         if status >= 500:
             self.log(
                 LogEmoji.WARNING,
@@ -949,21 +1002,44 @@ class API:
 
     def _checkin_challenge(self, user_agent: str) -> Optional[Tuple[str, str]]:
         """获取签到 challenge 并计算 proof；失败返回 None，由调用方回退旧协议。"""
+        self.challenge_missing = False
         response = self.request("GET", APIEndpoint.CHECKIN_CHALLENGE, user_agent=user_agent)
         if response is None:
+            self.challenge_missing = True
+            hint = "" if self.cloudflare_blocked else f"；{EXTENSION_FALLBACK_HINT}"
+            self.log(
+                LogEmoji.WARNING,
+                f"未取得签到 challenge，按旧协议提交（可能只获得 1 积分）{hint}",
+                force=True,
+            )
             return None
         try:
             data = response.json()
         except ValueError:
-            self.log(LogEmoji.WARNING, "签到 challenge 响应解析失败，按旧协议提交", force=True)
+            self.challenge_missing = True
+            self.log(
+                LogEmoji.WARNING,
+                f"签到 challenge 响应解析失败，按旧协议提交；{EXTENSION_FALLBACK_HINT}",
+                force=True,
+            )
             return None
         if not isinstance(data, dict) or data.get("code") != 0:
-            self.log(LogEmoji.WARNING, f"签到 challenge 响应异常: {data}", force=True)
+            self.challenge_missing = True
+            self.log(
+                LogEmoji.WARNING,
+                f"签到 challenge 响应异常，按旧协议提交: {data}；{EXTENSION_FALLBACK_HINT}",
+                force=True,
+            )
             return None
 
         nonce = data.get("nonce")
         if not nonce:
-            self.log(LogEmoji.WARNING, "签到 challenge 缺少 nonce，按旧协议提交", force=True)
+            self.challenge_missing = True
+            self.log(
+                LogEmoji.WARNING,
+                f"签到 challenge 缺少 nonce，按旧协议提交；{EXTENSION_FALLBACK_HINT}",
+                force=True,
+            )
             return None
 
         # challenge 到手后等待间隔后再提交

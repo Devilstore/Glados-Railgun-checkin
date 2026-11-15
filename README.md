@@ -4,14 +4,14 @@
 
 <p><sub>每天自动完成签到，结果可推送到手机。</sub></p>
 
-支持 **多账号** · **域名自动探测** · **设备自适应** · **单轮时间预算**，运行在 GitHub Actions 上，无需服务器。
+支持 **多账号** · **8 个域名** · **Cloudflare Turnstile**：可用 GitHub Actions 无人值守，也可用浏览器扩展在本机真实浏览器中签到。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![GLaDOS Check-in](https://github.com/Devilstore/Glados-Railgun-checkin/actions/workflows/gladosCheck.yml/badge.svg?branch=master)](https://github.com/Devilstore/Glados-Railgun-checkin/actions/workflows/gladosCheck.yml)
 [![Last commit](https://img.shields.io/github/last-commit/Devilstore/Glados-Railgun-checkin?branch=master)](https://github.com/Devilstore/Glados-Railgun-checkin/commits/master)
 
-[快速开始](#快速开始) · [账号配置](#配置-glados_cookies) · [积分兑换](#积分兑换) · [消息推送](#消息推送) · [问题排查](#问题排查) · [常见问题](#常见问题faq)
+[快速开始](#快速开始) · [浏览器扩展](#-浏览器扩展cloudflare-备用方案) · [账号配置](#配置-glados_cookies) · [积分兑换](#积分兑换) · [消息推送](#消息推送) · [问题排查](#问题排查) · [常见问题](#常见问题faq)
 
 </div>
 
@@ -25,7 +25,7 @@
 > [!TIP]
 > **还没有 GLaDOS 账号？**
 >
-> 用[**邀请链接注册**](https://glados.space/landing/0A58E-NV28S-6U3QV-33VMG) 享 9 折优惠，邀请码 [`0A58E-NV28S-6U3QV-33VMG`](https://0a58e-nv28s-6u3qv-33vmg.glados.space) · 优惠码 [`DEVILSTORE`](https://0a58e-nv28s-6u3qv-33vmg.glados.space)
+> 用[**邀请链接注册**](https://glados.space/landing/0A58E-NV28S-6U3QV-33VMG)；结算时使用优惠码 `DEVILSTORE` 可享 9 折。
 
 1. Fork 本仓库。
 2. 在自己的仓库进入 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，至少添加 `GLADOS_COOKIES`。
@@ -39,6 +39,49 @@
 | `SERVERCHAN_SENDKEY` | 否 | Server酱 推送，见[消息推送](#消息推送) |
 | `GLADOS_EXCHANGE_PLAN` | 否 | `plan100` / `plan200` / `plan500`，见[积分兑换](#积分兑换) |
 | `GLADOS_VERBOSE` | 否 | `true` / `1` / `yes` 输出详细日志 |
+
+## 🧩 浏览器扩展（Cloudflare 备用方案）
+
+### 怎么选
+
+| 使用场景 | 推荐 |
+|---|---|
+| 每天不想开电脑，接受 Actions 自动跑 | Python / Actions |
+| 经常遇到 Cloudflare、Turnstile、只拿到 1 积分 | 浏览器扩展 |
+| 想两者兼顾 | 保留 Actions，同时安装扩展补签 |
+
+Actions 版是纯 HTTP 请求，**无法通过 Cloudflare Turnstile**。如果日志出现：
+
+- `Cloudflare` / `Just a moment` / `Turnstile`；
+- HTTP `403` / `429` / `503`；
+- `Automated check-in detected`；
+- 只拿到 1 积分，明显少于正常签到；
+
+说明本次积分没有完整获得，继续重跑脚本通常也没有用。  
+请改用配套浏览器扩展，在真实浏览器里点击官网签到按钮，让 Turnstile 由官方组件完成。
+
+### 安装与使用
+
+1. 下载本仓库，或到 [Latest Release](https://github.com/Devilstore/Glados-Railgun-checkin/releases/latest) 下载扩展压缩包并解压；
+2. 打开 `edge://extensions`（Chrome 为 `chrome://extensions`），启用「开发人员模式」；
+3. 点「加载解压缩的扩展」，选择 `extension/` 目录；
+4. 打开扩展设置，点「+ 添加账号」：
+   - 主账号选「浏览器登录态」；
+   - 其他账号选「手动填 Cookie」；
+5. 保存后点「立即签到」，之后可在「设置」里配置自动签到、通知和推送。
+
+完整说明见：[`extension/README.md`](extension/README.md)
+
+### 版本
+
+当前版本：`1.0.0`。
+
+- `extension/` 目录始终是**最新源码**，适合开发者和本地加载；
+- 发布包按版本号命名，例如 `glados-checkin-extension-v1.0.0.zip`；
+- 升级时替换 `extension/` 目录内容，到 `edge://extensions` 点「重新加载」即可，账号数据保留；
+- 不要把 `latest` 当成唯一文件名；以 GitHub Releases 的 **Latest** 为准，版本化包便于回退和排查。
+
+Python / Actions 和扩展可以同时保留：Actions 负责无人值守，扩展负责 Cloudflare 限制下的本机补签。
 
 ## 🔧配置 GLADOS_COOKIES
 
@@ -162,7 +205,8 @@ schedule:
 | `设备平台不匹配(loginDevice=…)` | UA 与登录设备不一致 → 补充 `user-agent` 字段 |
 | `签到被拒：please checkin via …` | token 与域名不符（多为服务端规则变更）→ 确认 Cookie 来源域名 |
 | `无权限(code=-2)` | 该 Cookie 失效或账号风控 |
-| `Automated check-in detected` / 只给 1 积分 | GLaDOS 判定为自动签到；脚本已适配 challenge，但 TLS/HTTP 指纹、IP、设备等仍可能被识别 → 手动签到或使用官方客户端 |
+| `Cloudflare` / `Just a moment` / `Turnstile` / HTTP `403` `429` `503` | Cloudflare 拦截或限流，纯 HTTP 无法完成验证 → **改用浏览器扩展补签**，见[浏览器扩展](#-浏览器扩展cloudflare-备用方案) |
+| `Automated check-in detected` / 只给 1 积分 | GLaDOS 判定为自动签到；脚本已适配 challenge，但 TLS/HTTP 指纹、IP、设备等仍可能被识别 → **改用浏览器扩展**，在真实浏览器中完成验证 |
 | `运行超出预算` | 单轮超时，剩余账号被跳过 → 下轮或手动重跑 |
 | `积分请求失败 / 响应解析失败 / 格式异常 / 字段无法解析` | 查总积分失败 → 推送里显示 `总 None 积分`，**不影响签到结果**，可忽略 |
 
@@ -255,6 +299,15 @@ GLaDOS 会校验 UA 与登录设备。填了 `user-agent` 就原样使用；没�
 </details>
 
 <details>
+<summary><strong>Q：Cloudflare 拦截导致没有积分 / 只有 1 积分怎么办？</strong></summary>
+
+这是纯 HTTP 脚本的固有限制。日志出现 Cloudflare、Turnstile、403/429/503，或只拿到 1 积分时，说明本次签到没有完整完成。继续重跑大概率仍会被拦截。
+
+请改用配套浏览器扩展 [`extension/`](extension/README.md)：扩展在真实浏览器里点击官网签到按钮，由官方组件完成 Turnstile；支持 8 个域名、多账号、自动兑换和推送。
+
+</details>
+
+<details>
 <summary><strong>Q：签到失败会让 Actions 变红吗？</strong></summary>
 
 分两种情况：**配置错误**（未填 Cookie、JSON 格式非法）会以非 0 退出码结束，工作流变红；**业务失败**（Cookie 失效 `code=-2`、服务端 5xx）不会变红，避免偶发失败天天误报。因此业务失败需要自己关注推送或日志。
@@ -294,6 +347,7 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 ├── requirements.txt              # 依赖
 ├── README.md                     # 说明文档
 ├── LICENSE                       # MIT 许可
+├── extension/                    # 浏览器扩展：Cloudflare 备用签到方案
 └── .github/workflows/
     └── gladosCheck.yml           # Actions 定时任务
 ```
@@ -325,6 +379,7 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 - 优化失败原因提示；签到被拒、兑换未完成等场景给出可执行建议。
 - 日志自动脱敏：`koa:*` / `gld:*` / Bearer → `[REDACTED]`。
 - 加入 challenge 校验机制；获取失败时回退旧协议。
+- 识别 Cloudflare/Turnstile 拦截与 403/429/503；积分不完整时日志和推送会提示改用浏览器扩展。
 
 ## ⭐Star 趋势
 
