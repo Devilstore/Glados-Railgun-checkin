@@ -46,19 +46,19 @@
 
 | 使用场景 | 推荐 |
 |---|---|
-| 每天不想开电脑，接受 Actions 自动跑 | Python / Actions |
-| 经常遇到 Cloudflare、Turnstile、只拿到 1 积分 | 浏览器扩展 |
+| 每天不想开电脑，接受 Actions 自动跑 | Python / Actions + 打码平台 |
+| 愿意花约 0.02 元/次，让 Actions 自己过 Turnstile | 配置 `CAPTCHA_SOLVER_KEY` |
+| 不想接第三方服务，只有遇到拦截时手动补 | 浏览器扩展 |
 | 想两者兼顾 | 保留 Actions，同时安装扩展补签 |
 
-Actions 版是纯 HTTP 请求，**无法通过 Cloudflare Turnstile**。如果日志出现：
+Actions 版是纯 HTTP 请求，**本身产生不了 Turnstile token**。可以从日志区分两种情况：
 
-- `Cloudflare` / `Just a moment` / `Turnstile`；
-- HTTP `403` / `429` / `503`；
-- `Automated check-in detected`；
-- 只拿到 1 积分，明显少于正常签到；
+- 提示 `本次签到需要 Cloudflare Turnstile token，但未配置打码平台`；
+- 出现 `Cloudflare` / `Just a moment` / `Turnstile`、HTTP `403` / `429` / `503`；
+- 只拿到 1 积分，明显少于正常签到。
 
-说明本次积分没有完整获得，继续重跑脚本通常也没有用。  
-请改用配套浏览器扩展，在真实浏览器里点击官网签到按钮，让 Turnstile 由官方组件完成。
+**第一种可以直接解决**：配置打码平台密钥（见[打码平台](#-打码平台让-actions-自己过-turnstile)一节），Actions 就能自己完成签到。
+**其余情况**说明连 challenge 都拿不到（IP 被拦在更前面），这时打码也帮不上，请改用浏览器扩展。
 
 ### 安装与使用
 
@@ -82,6 +82,56 @@ Actions 版是纯 HTTP 请求，**无法通过 Cloudflare Turnstile**。如果�
 - 不要把 `latest` 当成唯一文件名；以 GitHub Releases 的 **Latest** 为准，版本化包便于回退和排查。
 
 Python / Actions 和扩展可以同时保留：Actions 负责无人值守，扩展负责 Cloudflare 限制下的本机补签。
+
+## 🔑 打码平台（让 Actions 自己过 Turnstile）
+
+2026-11-12 起，GLaDOS 的签到接口要求请求体里带 Cloudflare Turnstile token：
+
+```json
+{"nonce": "...", "proof": "sha256(nonce.glados-observe-v1)", "tsState": "ok", "turnstile": "<token>"}
+```
+
+纯 HTTP 请求产生不了 `turnstile`。**打码平台的作用就是替你把这一项算出来**：它用真实浏览器渲染验证组件，返回 token，脚本再拼进签到请求。配置之后 Actions 可以全自动完成签到，不用开电脑。
+
+### 配置
+
+在仓库 **Settings → Secrets and variables → Actions → Secrets** 中添加：
+
+| Secret | 说明 |
+|---|---|
+| `CAPTCHA_SOLVER_KEY` | 打码平台的密钥。**只配这一项即可**，默认使用云码 |
+| `CAPTCHA_SOLVER_PROVIDER` | 可选，`jfbym`（默认）或 `capsolver` |
+| `CAPTCHA_SOLVER_PROXY` | 可选，只对 `capsolver` 生效，形如 `http://user:pass@host:port` |
+
+不配置也能正常运行，只是遇到 Turnstile 时会在日志里提示需要配置。
+
+### 支持的平台
+
+| 平台 | `CAPTCHA_SOLVER_PROVIDER` | 单价 | 是否支持指定代理 |
+|---|---|---|---|
+| [云码](https://www.jfbym.com/) | `jfbym`（默认） | 0.02 元/次 | ❌ |
+| [CapSolver](https://www.capsolver.com/) | `capsolver` | 约 $1/1000 次 | ✅ 传 `CAPTCHA_SOLVER_PROXY` |
+
+一次签到消耗一次打码，两个账号每天约 0.04 元，一个月 1~2 元。
+
+### 什么时候需要代理
+
+Turnstile 的 token 里会带上「出 token 时的出口 IP」。如果目标站点在服务端校验 `remoteip`，token 的 IP 与签到请求的 IP 不一致就会被拒。
+
+- **云码**固定用平台自己的出口 IP，无法指定；
+- **CapSolver** 支持把代理一起传过去，让出 token 和签到走同一个出口。
+
+实测 GLaDOS 在 GitHub Actions 的机房 IP 下**不做**这项校验，云码即可签上；只有日志出现 `已提交打码 token 仍被拒` 时才需要换 CapSolver 并配代理。
+
+### 日志长什么样
+
+```text
+🍪[1:主号] 🌐[glados.rocks] ℹ️ 请求打码平台（jfbym）…
+🍪[1:主号] 🌐[glados.rocks] ✅ 打码完成，耗时 22.4s，token 880 字符
+🍪[1:主号] 🌐[glados.rocks] 🎫 签到成功，获得 10 积分
+```
+
+打码通常需要 15~25 秒，脚本已把这部分耗时算进等待间隔，不会额外增加一次 challenge 等待。
 
 ## 🔧配置 GLADOS_COOKIES
 
@@ -343,6 +393,7 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 ```text
 .
 ├── checkin.py                    # 主程序：账号模型 / API / 配置 / 报告 / 推送
+├── solver.py                     # 打码平台客户端（云码 / CapSolver）
 ├── logging_config.py             # 日志配置（北京时间、级别短标签、脱敏）
 ├── requirements.txt              # 依赖
 ├── README.md                     # 说明文档
@@ -380,6 +431,7 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 - 日志自动脱敏：`koa:*` / `gld:*` / Bearer → `[REDACTED]`。
 - 加入 challenge 校验机制；获取失败时回退旧协议。
 - 识别 Cloudflare/Turnstile 拦截与 403/429/503；积分不完整时日志和推送会提示改用浏览器扩展。
+- 支持打码平台：配置 `CAPTCHA_SOLVER_KEY` 后由平台生成 Turnstile token，Actions 可全自动完成签到；同时支持云码与 CapSolver（后者可指定代理）。
 
 ## ⭐Star 趋势
 
