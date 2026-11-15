@@ -440,7 +440,6 @@ async function reload() {
   STATE = resp.state;
   TODAY = resp.today;
 
-  // 检测"改了代码但没重新加载扩展"：Service Worker 不热更新
   const mv = chrome.runtime.getManifest().version;
   const brandVersion = $('brandVersion');
   if (brandVersion) brandVersion.textContent = 'v' + mv;

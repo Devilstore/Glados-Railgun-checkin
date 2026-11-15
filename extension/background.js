@@ -1,18 +1,6 @@
 /**
  * background.js —— GLaDOS 自动签到（MV3 Service Worker）
- *
- * 设计要点
- * --------
- * 1. 两种认证方式（按账号选择）：
- *    - session（默认）：直接用浏览器当前登录态，不读取、不注入任何 Cookie。
- *      签到页的请求由浏览器自己带上会话，User-Agent 天然与本机一致，
- *      不会出现「设备不一致」。同一站点只支持一个 session 账号。
- *    - cookie：把账号 Cookie / User-Agent 通过 declarativeNetRequest 的
- *      session rule（condition.tabIds 限定）只注入到本次签到的临时标签页，
- *      完全不改动浏览器 Cookie 存储，不影响日常登录状态。用于多账号。
- * 2. 真实点击：签到动作由页面自身的 button.ckb 触发，人机验证（Cloudflare
- *    Turnstile）由官方组件在真实浏览器环境完成。本扩展不构造、不伪造请求。
- * 3. 零外传：除目标站点自身接口外，不向任何第三方发送数据。
+ * session 模式复用浏览器会话；cookie 模式通过 DNR 仅注入临时标签页。
  */
 
 'use strict';
@@ -30,8 +18,6 @@ const ALL_RESOURCE_TYPES = [
 const RULE_ID_BASE = 700000;
 const LOG_LIMIT = 300;
 
-// 与 manifest.json 的 version 保持一致。用于让界面检测"改了代码但没重新加载
-// 扩展"的情况 —— Service Worker 不会热更新，这是最容易踩的坑。
 const EXT_VERSION = '1.0.0';
 
 
@@ -137,8 +123,7 @@ function releaseKeepAlive() {
 // ============================================================================
 
 /**
- * 把新增的内置域名合并进已有配置，保留用户原有的启用/停用状态，
- * 避免旧版本只存了部分站点时，升级后仍只看到旧列表。
+ * 补上缺少的内置站点，保留已有站点的启用状态。
  */
 function mergeDefaultSites(sites) {
   const list = Array.isArray(sites)
@@ -242,7 +227,6 @@ async function updateAccount(accountId, patch) {
  * 解析账号的认证方式。
  *   'cookie'  —— 手动填写了 Cookie，走请求头注入（可多账号）
  *   'session' —— 不填 Cookie，直接用浏览器当前登录态（单账号/站点）
- * 兼容旧配置：没有 authMode 字段时按是否有 cookie 自动判断。
  */
 function authModeOf(acc) {
   if (!acc) return 'session';
@@ -499,8 +483,7 @@ async function fetchAccountSnapshotInPage() {
   const pd = (points && points.data) || points || {};
 
   out.email = d.email || null;
-  // 官网前端把 status.configureId 当作 user id 使用；不同版本字段名不一致，
-  // 这里只接受明确的用户 ID 字段。不要用通用 d.id 兜底，它可能是配置/套餐 ID。
+  // 只接受明确的用户 ID 字段；通用 d.id 可能是配置/套餐 ID。
   out.userId = d.userId != null ? d.userId
     : (d.user_id != null ? d.user_id
       : (d.configureId != null ? d.configureId : null));
@@ -576,7 +559,7 @@ function classifyResult(data, fallbackText) {
     };
   }
 
-  // 有些旧接口把 code 返回成字符串（"0"/"1"），统一成数字再判断。
+  // 兼容字符串形式的 code（"0"/"1"）。
   const rawCode = data.code;
   const code = rawCode == null || rawCode === '' ? null : Number(rawCode);
   const reason = String(data.reason || '').toLowerCase();
@@ -617,7 +600,7 @@ function classifyResult(data, fallbackText) {
     return { status: 'repeat', points: 0, message: message || '今日已签到', raw: data };
   }
 
-  // 无 code 但日程显示已签（部分旧站“已签到”时不返回 code）
+  // 无 code 但日程显示已签
   if (code == null && (data.checkedIn === true || data.checked === true)) {
     return { status: 'repeat', points: 0, message: message || '今日已签到', raw: data };
   }
@@ -984,7 +967,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
         return result;
       }
 
-      // 官网要求 challenge 至少 2.5 秒后才能提交；旧配置/手动改存储也不能低于它。
+      // 官网要求 challenge 至少 2.5 秒后才能提交。
       const minStay = Math.max(2500, Number(settings.minStayMs) || 4500);
       const maxStay = Math.max(minStay, Number(settings.maxStayMs) || 6500);
       const stay = minStay + Math.random() * Math.max(0, maxStay - minStay);

@@ -14,6 +14,11 @@ htmlcov/
 .env
 .env.*
 !.env.example
+glados-accounts*.json
+*accounts*.json
+
+# 本地调试脚本
+debug.py
 
 # 扩展打包产物 / 签名文件
 glados-checkin-extension-*.zip
@@ -21,7 +26,9 @@ extension/*.zip
 *.crx
 *.pem
 
-# 日志与临时文件
+# 发布临时文件与日志
+SHA256SUMS.txt
+release-notes.md
 logs/
 *.log
 tmp/
