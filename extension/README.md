@@ -121,10 +121,10 @@ GLaDOS 签到 · 成功 1 · 失败 1 · 重复 1
 
 ## 🔄 版本与更新
 
-当前版本：`1.0.0`。
+当前版本：`1.0.1`。
 
 - `extension/` 目录始终是最新源码；
-- 发布包按版本命名，例如 `glados-checkin-extension-v1.0.0.zip`；
+- 发布包按版本命名，例如 `glados-checkin-extension-v1.0.1.zip`；
 - 升级时替换 `extension/` 内容，到 `edge://extensions` 点「重新加载」；
 - 加载目录不变时扩展 ID 不变，账号数据保留；
 - 下载发布包请以 GitHub Releases 的 **Latest** 为准。
