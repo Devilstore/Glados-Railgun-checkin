@@ -74,10 +74,10 @@ Actions 版是纯 HTTP 请求，**无法通过 Cloudflare Turnstile**。如果�
 
 ### 版本
 
-当前版本：`1.0.1`。
+当前版本：`1.0.2`。
 
 - `extension/` 目录始终是**最新源码**，适合开发者和本地加载；
-- 发布包按版本号命名，例如 `glados-checkin-extension-v1.0.1.zip`；
+- 发布包按版本号命名，例如 `glados-checkin-extension-v1.0.2.zip`；
 - 升级时替换 `extension/` 目录内容，到 `edge://extensions` 点「重新加载」即可，账号数据保留；
 - 不要把 `latest` 当成唯一文件名；以 GitHub Releases 的 **Latest** 为准，版本化包便于回退和排查。
 
@@ -374,6 +374,12 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 - 推送兼容 Server酱。
 
 **2026-11**
+
+**1.0.2**
+
+- 扩展增加可选的 Cloudflare 验证框自动点击（默认关闭，需要 `debugger` 权限）；
+- 通过 CDP 在 iframe 内查询 checkbox 坐标，失败时回退到置顶页面人工验证；
+- 补充 `debugger` 权限说明。
 
 **1.0.1**
 

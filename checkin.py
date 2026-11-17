@@ -276,6 +276,7 @@ class CheckinResult:
     points_total: Optional[int] = None  # 账户总积分；None 表示未取到
     exchange: str = ""  # 仅在真正执行兑换时才有值，不含「未配置」这类配置状态
     note: str = ""  # 附加提示（如剩余天数偏少）
+    turnstile: bool = False  # 服务端要求 Turnstile，纯 HTTP 无法完成
     code: CheckinStatus = CheckinStatus.FAILURE
 
     @classmethod
@@ -387,7 +388,7 @@ class CookieEntry:
         expiry_note = self._expiry_note(result.days)
         if expiry_note:
             notes.append(expiry_note)
-        if api.cloudflare_blocked:
+        if api.cloudflare_blocked or api.turnstile_required or result.turnstile:
             notes.append(EXTENSION_FALLBACK_HINT)
         elif api.challenge_missing and result.points <= 1:
             notes.append(EXTENSION_FALLBACK_HINT)
@@ -688,6 +689,8 @@ def log_reject(code: int, raw: Dict, message: str, domain: str, log: Callable[..
             f"无权限(code=-2)：Cookie 可能已失效，请重新登录 {domain} 刷新 Cookie 并更新仓库 Secret GLADOS_COOKIES",
             True,
         )
+    elif code == 5 or "turnstile" in message.lower() or "cloudflare" in message.lower():
+        log(LogEmoji.ERROR, f"Cloudflare/Turnstile 验证失败(code={code})。{EXTENSION_FALLBACK_HINT}", True)
     else:
         log(LogEmoji.ERROR, f"未预期响应(code={code}, message={message})，请检查 GLaDOS 服务状态或 Cookie", True)
 
@@ -705,6 +708,11 @@ def parse_checkin(raw: Optional[Dict], domain: str, log: Callable[..., None], ua
         code = int(code.strip())
     message = str(raw.get("message", "无消息字段"))
     points = earned_points(raw)
+    result.turnstile = (
+        code == 5
+        or "turnstile" in message.lower()
+        or "cloudflare verification failed" in message.lower()
+    )
 
     # token 与域名不一致时服务端返回 "please checkin via https://..."，此响应 code 可能为 0
     if "please checkin via" in message.lower():
@@ -774,6 +782,7 @@ class API:
         self.probing = probing
         self.user_agent = (user_agent or "").strip()
         self.challenge_missing = False
+        self.turnstile_required = False
         self.cloudflare_blocked = False
         self.cloudflare_hint = ""
 
@@ -1031,6 +1040,15 @@ class API:
                 force=True,
             )
             return None
+
+        turnstile = data.get("turnstile") or data.get("turnstileSitekey") or data.get("sitekey")
+        if turnstile:
+            self.turnstile_required = True
+            self.log(
+                LogEmoji.WARNING,
+                f"签到 challenge 要求 Turnstile 验证，纯 HTTP 无法完成；{EXTENSION_FALLBACK_HINT}",
+                force=True,
+            )
 
         nonce = data.get("nonce")
         if not nonce:

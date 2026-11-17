@@ -393,6 +393,7 @@ function renderSchedule() {
   $('maxStay').value = s.maxStayMs != null ? s.maxStayMs : 6500;
   $('skipIfDone').checked = s.skipIfDone !== false;
   $('notifyEnabled').checked = s.notifyEnabled !== false;
+  $('autoClickTurnstile').checked = s.autoClickTurnstile === true;
 }
 
 // ---------------------------------------------------------------- 渲染：推送
@@ -991,6 +992,13 @@ function bindEvents() {
   });
 
   // 调度
+  $('autoClickTurnstile').addEventListener('change', (e) => {
+    if (!e.target.checked) return;
+    if (!confirm('自动点击 Cloudflare 验证框会使用 Chrome 调试接口，可能短暂显示“正在调试此浏览器”。图片验证仍需手动完成。是否继续？')) {
+      e.target.checked = false;
+    }
+  });
+
   $('btnSaveSchedule').addEventListener('click', async () => {
     const settings = {
       targetHour: Math.max(0, Math.min(23, parseInt($('targetHour').value, 10) || 0)),
@@ -998,7 +1006,8 @@ function bindEvents() {
       minStayMs: Math.max(2500, parseInt($('minStay').value, 10) || 4500),
       maxStayMs: Math.max(2500, parseInt($('maxStay').value, 10) || 6500),
       skipIfDone: $('skipIfDone').checked,
-      notifyEnabled: $('notifyEnabled').checked
+      notifyEnabled: $('notifyEnabled').checked,
+      autoClickTurnstile: $('autoClickTurnstile').checked
     };
     if (settings.maxStayMs < settings.minStayMs) {
       toast('停留上限不能小于下限', true);

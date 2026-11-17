@@ -18,7 +18,7 @@ const ALL_RESOURCE_TYPES = [
 const RULE_ID_BASE = 700000;
 const LOG_LIMIT = 300;
 
-const EXT_VERSION = '1.0.1';
+const EXT_VERSION = '1.0.2';
 
 
 const DEFAULT_SITES = [
@@ -75,6 +75,7 @@ const DEFAULT_SETTINGS = {
   targetHour: 9,          // 每天目标小时（0-23）
   maxDelayMinutes: 45,    // 目标小时内随机延迟上限（分钟）
   notifyEnabled: true,    // 桌面通知
+  autoClickTurnstile: false, // 自动点击 Cloudflare 验证框（实验性）
   skipIfDone: true,       // 今日已签则跳过
   pushdeerKey: '',        // PushDeer SendKey
   serverchanKey: '',      // ServerChan SendKey
@@ -427,6 +428,217 @@ async function clickCheckinInPage() {
     captures: (window.__gcdResults || []).length,
     baseCount
   };
+}
+
+function readTurnstileInPage() {
+  const frames = [];
+  const collect = (root) => {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('iframe').forEach((f) => frames.push(f));
+    root.querySelectorAll('*').forEach((el) => {
+      if (el.shadowRoot) collect(el.shadowRoot);
+    });
+  };
+  collect(document);
+
+  const tokenEl = document.querySelector('[name="cf-turnstile-response"]');
+  const token = tokenEl ? String(tokenEl.value || '') : '';
+
+  let frame = null;
+  for (const f of frames) {
+    const blob = `${f.src || ''} ${f.title || ''}`.toLowerCase();
+    if (!blob.includes('challenges.cloudflare.com') &&
+        !blob.includes('turnstile') &&
+        !blob.includes('cloudflare')) continue;
+    try { f.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) { /* ignore */ }
+    const rect = f.getBoundingClientRect();
+    if (rect.width < 40 || rect.height < 20) continue;
+    frame = {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height,
+      src: String(f.src || '')
+    };
+    break;
+  }
+  return { token, frame };
+}
+
+async function waitTurnstileToken(tabId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: readTurnstileInPage
+      });
+      const state = (res && res[0] && res[0].result) || {};
+      if (state.token) return true;
+    } catch (e) {
+      return false;
+    }
+    await sleep(300);
+  }
+  return false;
+}
+
+async function turnstileCheckboxPoint(tabId, frame, target) {
+  await chrome.debugger.sendCommand(target, 'Page.enable');
+  const tree = await chrome.debugger.sendCommand(target, 'Page.getFrameTree');
+  const findFrame = (node) => {
+    if (!node) return null;
+    if (/challenges\.cloudflare\.com|turnstile/i.test(node.frame?.url || '')) {
+      return node.frame;
+    }
+    for (const child of node.childFrames || []) {
+      const found = findFrame(child);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  const child = findFrame(tree && tree.frameTree);
+  if (child) {
+    try {
+      const world = await chrome.debugger.sendCommand(target, 'Page.createIsolatedWorld', {
+        frameId: child.id,
+        worldName: 'glados-turnstile-checkbox'
+      });
+      const evaluated = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+        contextId: world.executionContextId,
+        returnByValue: true,
+        expression: `(() => {
+          const selectors = [
+            'input[type="checkbox"]',
+            '[role="checkbox"]',
+            '#challenge-stage input',
+            '.ctp-checkbox-label input',
+            '.cb-c'
+          ];
+          const seen = new Set();
+          const find = (root) => {
+            if (!root || seen.has(root)) return null;
+            seen.add(root);
+            for (const selector of selectors) {
+              const el = root.querySelector(selector);
+              if (!el) continue;
+              const rect = el.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                return {
+                  x: rect.left + rect.width / 2,
+                  y: rect.top + rect.height / 2,
+                  selector
+                };
+              }
+            }
+            for (const el of root.querySelectorAll('*')) {
+              if (!el.shadowRoot) continue;
+              const found = find(el.shadowRoot);
+              if (found) return found;
+            }
+            return null;
+          };
+          return find(document);
+        })()`
+      });
+      const point = evaluated && evaluated.result && evaluated.result.value;
+      if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+        return {
+          x: Math.round(frame.x + point.x),
+          y: Math.round(frame.y + point.y),
+          source: point.selector
+        };
+      }
+    } catch (e) { /* fallback to frame-relative point */ }
+  }
+
+  return {
+    x: Math.round(frame.x + Math.min(28, frame.width / 5)),
+    y: Math.round(frame.y + frame.height / 2),
+    source: 'frame-fallback'
+  };
+}
+
+async function clickTurnstileCheckbox(tabId, frame) {
+  const target = { tabId };
+  await chrome.debugger.attach(target, '1.3');
+  try {
+    const point = await turnstileCheckboxPoint(tabId, frame, target);
+    await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: point.x, y: point.y
+    });
+    await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1
+    });
+    await sleep(100);
+    await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1
+    });
+    return point;
+  } finally {
+    try { await chrome.debugger.detach(target); } catch (e) { /* ignore */ }
+  }
+}
+
+async function focusTab(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    await chrome.tabs.update(tabId, { active: true });
+    if (tab && tab.windowId != null) {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function prepareTurnstile(tabId, settings) {
+  let state = {};
+  try {
+    const res = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: readTurnstileInPage
+    });
+    state = (res && res[0] && res[0].result) || {};
+  } catch (e) {
+    return { needed: false, ok: true };
+  }
+  if (!state.frame && !state.token) return { needed: false, ok: true };
+  if (state.token) return { needed: true, ok: true };
+
+  // 某些 Turnstile 会静默完成，先给页面一点时间。
+  if (await waitTurnstileToken(tabId, 5000)) {
+    return { needed: true, ok: true };
+  }
+
+  let autoClicked = false;
+  if (settings.autoClickTurnstile && chrome.debugger) {
+    try {
+      await clickTurnstileCheckbox(tabId, state.frame);
+      autoClicked = true;
+    } catch (e) {
+      console.warn('[turnstile] 自动点击失败', e);
+    }
+    if (await waitTurnstileToken(tabId, 15000)) {
+      return { needed: true, ok: true, auto: true };
+    }
+  }
+
+  await focusTab(tabId);
+  try {
+    chrome.notifications.create(`glados-turnstile-${Date.now()}`, {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+      title: 'GLaDOS 需要人机验证',
+      message: '签到页已打开，请完成 Cloudflare 验证；完成后会自动继续。'
+    }, () => {
+      if (chrome.runtime.lastError) console.warn('[turnstile notification]', chrome.runtime.lastError.message);
+    });
+  } catch (e) { /* ignore */ }
+
+  const ok = await waitTurnstileToken(tabId, 90000);
+  return { needed: true, ok, auto: autoClicked };
 }
 
 /**
@@ -972,6 +1184,16 @@ async function checkinOne(account, site, settings, trigger, opts) {
       const maxStay = Math.max(minStay, Number(settings.maxStayMs) || 6500);
       const stay = minStay + Math.random() * Math.max(0, maxStay - minStay);
       await sleep(stay);
+
+      const turnstile = await prepareTurnstile(tabId, settings);
+      if (turnstile.needed && !turnstile.ok) {
+        result.status = 'turnstile';
+        result.message = '需要完成 Cloudflare 人机验证；签到页已打开，请手动完成后再试';
+        result.detail = turnstile.auto
+          ? '自动点击验证框后仍未获得令牌，已转为人工验证'
+          : '检测到 Cloudflare 验证框，等待人工完成超时';
+        return result;
+      }
 
       const clickRes = await chrome.scripting.executeScript({
         target: { tabId },

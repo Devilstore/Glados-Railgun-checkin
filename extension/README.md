@@ -4,7 +4,7 @@
 
 <p><sub>在真实浏览器中完成 GLaDOS 签到，支持多账号、Cloudflare Turnstile、自动兑换和推送。</sub></p>
 
-支持 **浏览器登录态** · **Cookie 多账号** · **8 个域名** · **Turnstile** · **自动兑换** · **推送**
+支持 **浏览器登录态** · **Cookie 多账号** · **8 个域名** · **Turnstile** · **可选自动点击验证框** · **自动兑换** · **推送**
 
 </div>
 
@@ -70,7 +70,10 @@ railgun.info
 | 页面停留 | 拟人停留，最低 2.5 秒 |
 | 今日已签则跳过 | 避免重复签到 |
 | 桌面通知 | 全部任务完成后汇总通知 |
+| 自动点击验证框 | 实验性；默认关闭；用 debugger 点击 Cloudflare iframe 复选框，图片题仍需手动 |
 | 远程推送 | PushDeer / ServerChan |
+
+> 自动点击需要 `debugger` 权限。Chrome 不允许把 `debugger` 作为可选权限，因此即使关闭自动点击，安装时也会看到调试权限提示；开启后 Chrome 可能在点击瞬间显示“扩展正在调试此浏览器”，失败会自动转为置顶页面并等待人工完成。
 
 自动重试：
 
@@ -117,14 +120,15 @@ GLaDOS 签到 · 成功 1 · 失败 1 · 重复 1
 | `scripting` | 在签到页点击按钮 |
 | `tabs` | 创建和关闭临时签到标签页 |
 | `cookies` | 读取当前登录态，便于配置 |
+| `debugger` | 实验性自动点击 Cloudflare 验证框；仅在点击瞬间附加 |
 | `host_permissions` | 8 个 GLaDOS 域名及推送接口 |
 
 ## 🔄 版本与更新
 
-当前版本：`1.0.1`。
+当前版本：`1.0.2`。
 
 - `extension/` 目录始终是最新源码；
-- 发布包按版本命名，例如 `glados-checkin-extension-v1.0.1.zip`；
+- 发布包按版本命名，例如 `glados-checkin-extension-v1.0.2.zip`；
 - 升级时替换 `extension/` 内容，到 `edge://extensions` 点「重新加载」；
 - 加载目录不变时扩展 ID 不变，账号数据保留；
 - 下载发布包请以 GitHub Releases 的 **Latest** 为准。

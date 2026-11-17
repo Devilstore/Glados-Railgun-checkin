@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GLaDOS 自动签到",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "多账号、多站点自动签到。支持直接用浏览器登录态（无需 Cookie），在真实浏览器中点击签到按钮完成人机验证，纯本地运行。",
   "minimum_chrome_version": "102",
   "permissions": [
@@ -12,7 +12,8 @@
     "declarativeNetRequestWithHostAccess",
     "scripting",
     "tabs",
-    "cookies"
+    "cookies",
+    "debugger"
   ],
   "host_permissions": [
     "https://glados.cloud/*",
