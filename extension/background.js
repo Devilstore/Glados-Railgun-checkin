@@ -452,12 +452,12 @@ function readTurnstileInPage() {
         !blob.includes('cloudflare')) continue;
     try { f.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) { /* ignore */ }
     const rect = f.getBoundingClientRect();
-    if (rect.width < 40 || rect.height < 20) continue;
     frame = {
       x: rect.left,
       y: rect.top,
       width: rect.width,
       height: rect.height,
+      visible: rect.width >= 40 && rect.height >= 20,
       src: String(f.src || '')
     };
     break;
@@ -612,8 +612,11 @@ async function prepareTurnstile(tabId, settings) {
     return { needed: true, ok: true };
   }
 
+  // 先让页面可见，避免 Cloudflare 在隐藏标签页里一直等待交互。
+  await focusTab(tabId);
+
   let autoClicked = false;
-  if (settings.autoClickTurnstile && chrome.debugger) {
+  if (settings.autoClickTurnstile && state.frame.visible && chrome.debugger) {
     try {
       await clickTurnstileCheckbox(tabId, state.frame);
       autoClicked = true;
