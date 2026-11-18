@@ -74,10 +74,10 @@ Actions 版是纯 HTTP 请求，**无法通过 Cloudflare Turnstile**。如果�
 
 ### 版本
 
-当前版本：`1.0.2`。
+当前版本：`1.0.3`。
 
 - `extension/` 目录始终是**最新源码**，适合开发者和本地加载；
-- 发布包按版本号命名，例如 `glados-checkin-extension-v1.0.2.zip`；
+- 发布包按版本号命名，例如 `glados-checkin-extension-v1.0.3.zip`；
 - 升级时替换 `extension/` 目录内容，到 `edge://extensions` 点「重新加载」即可，账号数据保留；
 - 不要把 `latest` 当成唯一文件名；以 GitHub Releases 的 **Latest** 为准，版本化包便于回退和排查。
 
@@ -374,6 +374,12 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 - 推送兼容 Server酱。
 
 **2026-11**
+
+**1.0.3**
+
+- 修复 Turnstile 在点击签到后才出现时扩展一直停留在后台的问题；
+- 点击期间并行监控验证框，发现后自动激活签到页并提示人工完成；
+- 即使 iframe 初始不可见也会进入等待验证流程。
 
 **1.0.2**
 

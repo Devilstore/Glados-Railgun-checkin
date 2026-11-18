@@ -18,7 +18,7 @@ const ALL_RESOURCE_TYPES = [
 const RULE_ID_BASE = 700000;
 const LOG_LIMIT = 300;
 
-const EXT_VERSION = '1.0.2';
+const EXT_VERSION = '1.0.3';
 
 
 const DEFAULT_SITES = [
@@ -592,6 +592,73 @@ async function focusTab(tabId) {
   } catch (e) { /* ignore */ }
 }
 
+function notifyTurnstile() {
+  try {
+    chrome.notifications.create(`glados-turnstile-${Date.now()}`, {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+      title: 'GLaDOS 需要人机验证',
+      message: '签到页已打开，请完成 Cloudflare 验证；完成后会自动继续。'
+    }, () => {
+      if (chrome.runtime.lastError) console.warn('[turnstile notification]', chrome.runtime.lastError.message);
+    });
+  } catch (e) { /* ignore */ }
+}
+
+async function readTurnstileState(tabId) {
+  try {
+    const res = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: readTurnstileInPage
+    });
+    return (res && res[0] && res[0].result) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function watchTurnstileDuringClick(tabId, settings) {
+  let stopped = false;
+  let focused = false;
+  let notified = false;
+  let autoTried = false;
+
+  const promise = (async () => {
+    const deadline = Date.now() + 100000;
+    while (!stopped && Date.now() < deadline) {
+      const state = await readTurnstileState(tabId);
+      if (!state) return;
+      if (state.token) return;
+      if (state.frame) {
+        if (!focused) {
+          focused = true;
+          await focusTab(tabId);
+        }
+        if (!notified) {
+          notified = true;
+          notifyTurnstile();
+        }
+        if (!autoTried && settings.autoClickTurnstile &&
+            state.frame.visible && chrome.debugger) {
+          autoTried = true;
+          try {
+            await clickTurnstileCheckbox(tabId, state.frame);
+          } catch (e) {
+            console.warn('[turnstile] 自动点击失败', e);
+          }
+        }
+      }
+      await sleep(700);
+    }
+  })().catch((e) => console.warn('[turnstile watcher]', e));
+
+  return {
+    promise,
+    stop() { stopped = true; }
+  };
+}
+
 async function prepareTurnstile(tabId, settings) {
   let state = {};
   try {
@@ -628,18 +695,7 @@ async function prepareTurnstile(tabId, settings) {
     }
   }
 
-  await focusTab(tabId);
-  try {
-    chrome.notifications.create(`glados-turnstile-${Date.now()}`, {
-      type: 'basic',
-      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
-      title: 'GLaDOS 需要人机验证',
-      message: '签到页已打开，请完成 Cloudflare 验证；完成后会自动继续。'
-    }, () => {
-      if (chrome.runtime.lastError) console.warn('[turnstile notification]', chrome.runtime.lastError.message);
-    });
-  } catch (e) { /* ignore */ }
-
+  notifyTurnstile();
   const ok = await waitTurnstileToken(tabId, 90000);
   return { needed: true, ok, auto: autoClicked };
 }
@@ -1198,11 +1254,19 @@ async function checkinOne(account, site, settings, trigger, opts) {
         return result;
       }
 
-      const clickRes = await chrome.scripting.executeScript({
+      const clickPromise = chrome.scripting.executeScript({
         target: { tabId },
         world: 'MAIN',
         func: clickCheckinInPage
       });
+      // 有些 Turnstile 是点击签到按钮后才出现，点击期间也要盯着并激活页面。
+      const watcher = turnstile.needed ? null : watchTurnstileDuringClick(tabId, settings);
+      let clickRes;
+      try {
+        clickRes = await clickPromise;
+      } finally {
+        if (watcher) watcher.stop();
+      }
       const r = (clickRes && clickRes[0] && clickRes[0].result) || {};
 
       if (r.reason === 'not-logged-in') {
