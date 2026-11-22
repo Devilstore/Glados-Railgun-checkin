@@ -160,6 +160,16 @@ function todayEarned(acc) {
   return null;
 }
 
+function lastMessageOf(last, today) {
+  if (!last) return null;
+  const isToday = last.date === today;
+  return {
+    isToday,
+    message: last.message || '',
+    boost: isToday && last.status === 'success' && last.points > 0 ? last.points : null
+  };
+}
+
 function dotCls(acc) {
   const t = todayStatus(acc);
   if (t.cls === 'success' || t.cls === 'repeat') return 'ok';
@@ -182,13 +192,16 @@ function renderAccounts() {
     const mode = authModeOf(acc);
     const earnedToday = todayEarned(acc);
 
+    const lm = lastMessageOf(last, TODAY);
+    const lastMsg = !lm ? ''
+      : (lm.isToday
+          ? `${escapeHtml(lm.message)}${lm.boost != null ? ` <strong>+${lm.boost}</strong>` : ''}`
+          : `上次 ${escapeHtml(lm.message)}`);
     const lastMain = last
       ? `<div class="acc-last-main">
            <span class="pill ${st.cls === 'idle' ? 'idle' : st.cls}">${escapeHtml(st.label)}</span>
-           <span class="acc-last-msg">${escapeHtml(last.message || '')}${
-             last.status === 'success' && last.points > 0 ? ` <strong>+${last.points}</strong>` : ''
-           }</span>
-           <span class="acc-last-time">${escapeHtml(last.date === TODAY ? st.text : last.date)}</span>
+           <span class="acc-last-msg">${lastMsg}</span>
+           <span class="acc-last-time">${escapeHtml(lm.isToday ? st.text : last.date)}</span>
          </div>`
       : `<div class="acc-last-main">
            <span class="pill idle">未执行</span>

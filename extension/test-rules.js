@@ -14,6 +14,7 @@ const asyncNoop = async () => {};
 // ---- 记录 chrome API 调用 ----
 const calls = {
   addedRules: [],
+  ruleObjects: [],
   removedRules: [],
   removedTabs: []
 };
@@ -38,7 +39,10 @@ const sandbox = {
     declarativeNetRequest: {
       updateSessionRules: async ({ removeRuleIds, addRules }) => {
         (removeRuleIds || []).forEach((id) => calls.removedRules.push(id));
-        (addRules || []).forEach((r) => calls.addedRules.push(r.id));
+        (addRules || []).forEach((r) => {
+          calls.addedRules.push(r.id);
+          calls.ruleObjects.push(r);
+        });
       },
       getSessionRules: async () => []
     },
@@ -66,7 +70,7 @@ if (!nextRuleId || !releaseRuleId) {
 
 const rows = [];
 let pass = 0;
-const total = 10;
+const total = 18;
 function check(name, cond, extra) {
   if (cond) pass++;
   rows.push(`${cond ? '[OK  ]' : '[FAIL]'} ${name}${cond || !extra ? '' : '  → ' + extra}`);
@@ -116,6 +120,39 @@ function check(name, cond, extra) {
     await new Promise((r) => setTimeout(r, 30));
     check('标签页关闭后自动移除其 DNR 规则', calls.removedRules.includes(a1),
       `removed=${JSON.stringify(calls.removedRules)}`);
+  }
+
+  // 7) 规则必须限定域名，否则 Cookie 会被塞进第三方请求
+  const r0 = calls.ruleObjects[0];
+  check('规则带 urlFilter', !!(r0 && r0.condition && r0.condition.urlFilter),
+    JSON.stringify(r0 && r0.condition));
+
+  /**
+   * 模拟 DNR urlFilter 的 || 前缀语义：匹配域名本身及其子域，
+   * 但要求命中点位于主机名开头或 . 之后。
+   */
+  const matchAnchor = (filter, url) => {
+    if (!filter.startsWith('||')) return false;
+    const host = String(url).replace(/^https?:\/\//, '').split(/[/?#]/)[0].toLowerCase();
+    const d = filter.slice(2).toLowerCase();
+    return host === d || host.endsWith('.' + d);
+  };
+
+  const dom = 'glados.cloud';
+  check('匹配本站签到页', matchAnchor('||' + dom, `https://${dom}/console/checkin`));
+  check('匹配本站 API', matchAnchor('||' + dom, `https://${dom}/api/user/checkin`));
+  check('匹配子域', matchAnchor('||' + dom, `https://api.${dom}/api/user/status`));
+  check('不匹配第三方 CDN',
+    !matchAnchor('||' + dom, 'https://cdn.jsdelivr.net/npm/vue.js'));
+  check('不匹配字体站',
+    !matchAnchor('||' + dom, 'https://fonts.gstatic.com/s/x.woff2'));
+  check('不匹配仿冒域名',
+    !matchAnchor('||' + dom, 'https://notglados.cloud.evil.com/'));
+
+  if (r0 && r0.condition) {
+    check('实际规则的 urlFilter 指向该站点',
+      r0.condition.urlFilter === '||' + site.domain,
+      String(r0.condition.urlFilter));
   }
 
   console.log('=== 规则 ID 与保留标签页测试 ===\n');

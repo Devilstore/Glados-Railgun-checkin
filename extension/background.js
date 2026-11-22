@@ -16,7 +16,7 @@ const ALL_RESOURCE_TYPES = [
 const RULE_ID_BASE = 700000;
 const LOG_LIMIT = 300;
 
-const EXT_VERSION = '1.1.1';
+const EXT_VERSION = '1.1.2';
 
 
 const DEFAULT_SITES = [
@@ -169,12 +169,19 @@ function fmtTime(ts) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function pushLog(entry) {
-  const { logs } = await chrome.storage.local.get('logs');
-  const list = Array.isArray(logs) ? logs : [];
-  list.unshift(Object.assign({ at: Date.now(), time: fmtTime(Date.now()) }, entry));
-  if (list.length > LOG_LIMIT) list.length = LOG_LIMIT;
-  await chrome.storage.local.set({ logs: list });
+let logChain = Promise.resolve();
+
+function pushLog(entry) {
+  const run = async () => {
+    const { logs } = await chrome.storage.local.get('logs');
+    const list = Array.isArray(logs) ? logs : [];
+    list.unshift(Object.assign({ at: Date.now(), time: fmtTime(Date.now()) }, entry));
+    if (list.length > LOG_LIMIT) list.length = LOG_LIMIT;
+    await chrome.storage.local.set({ logs: list });
+  };
+  const next = logChain.then(run);
+  logChain = next.catch(() => {});
+  return next;
 }
 
 // ---- 账号状态更新 ----
@@ -288,6 +295,7 @@ async function addTabScopedRule(tabId, account, site) {
     },
     condition: {
       tabIds: [tabId],
+      urlFilter: `||${site.domain}`,
       resourceTypes: ALL_RESOURCE_TYPES
     }
   };
@@ -791,7 +799,11 @@ async function fetchAccountSnapshotInPage() {
     try {
       const r = await fetch(path, {
         credentials: 'include',
-        headers: { accept: 'application/json, text/plain, */*' }
+        cache: 'no-store',
+        headers: {
+          accept: 'application/json, text/plain, */*',
+          'cache-control': 'no-cache'
+        }
       });
       return await r.json();
     } catch (e) {
@@ -816,9 +828,16 @@ async function fetchAccountSnapshotInPage() {
   out.loggedIn = !!(status && status.code === 0);
   out.statusCode = status && status.code;
 
-  // ---- 本地日期键（官网按本地时区分格，这里保持一致） ----
+  // ---- 日期键 ----
   const keyOf = (dt) => `${dt.getFullYear()}-${dt.getMonth() + 1}-${dt.getDate()}`;
   const localToday = keyOf(new Date());
+
+  const normDay = (v) => {
+    if (!v) return null;
+    const m = String(v).match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    return m ? `${Number(m[1])}-${Number(m[2])}-${Number(m[3])}` : null;
+  };
+  const serverDay = normDay(d.system_date);
 
   // ---- history 流水 → 每日签到点数 ----
   out.checkinDays = {};
@@ -845,10 +864,15 @@ async function fetchAccountSnapshotInPage() {
     });
   }
 
-  out.todayKey = localToday;
-  out.todayPoints = out.checkinDays[localToday] != null ? out.checkinDays[localToday] : null;
+  const todayKey = serverDay || localToday;
+  out.todayKey = todayKey;
+  out.localTodayKey = localToday;
+  out.serverDay = serverDay;
+  out.dayMismatch = !!(serverDay && serverDay !== localToday);
+  out.todayPoints = out.checkinDays[todayKey] != null ? out.checkinDays[todayKey] : null;
   out.alreadyToday = out.todayPoints != null;
   out.earnedToday = out.todayPoints;
+  out.serverDate = d.system_date || null;
   return out;
 }
 
@@ -1835,9 +1859,17 @@ async function sendPushNotification(settings, title, content) {
 }
 
 function logPushFailures(results) {
-  (results || []).filter((r) => !r.ok).forEach((r) => {
+  const failed = (results || []).filter((r) => !r.ok);
+  failed.forEach((r) => {
     console.warn(`[push] ${r.provider} 失败：${r.message || '未知错误'}`);
   });
+  if (failed.length) {
+    pushLog({
+      status: 'info', ok: false, trigger: '-',
+      accountName: '推送', domain: '-',
+      message: `推送失败：${failed.map((r) => `${r.provider} ${r.message || ''}`.trim()).join('；')}`
+    }).catch(() => {});
+  }
 }
 
 async function notifyResult(result, settings) {
@@ -1923,6 +1955,7 @@ async function runAll(options) {
     const targets = [];
     const isAuto = (opts.trigger || 'auto') === 'auto';
     const autoSessionSites = new Set();
+    let skippedDone = 0;
 
     for (const acc of accounts) {
       if (acc.enabled === false) continue;
@@ -1940,7 +1973,10 @@ async function runAll(options) {
       const sameDay = acc.last && acc.last.date === today;
       const done = sameDay && (acc.last.status === 'success' || acc.last.status === 'repeat');
       // 自动任务每天只跑一次（与 skipIfDone 无关），手动 force 可强制重跑。
-      if (done && (settings.skipIfDone || isAuto) && !opts.force) continue;
+      if (done && (settings.skipIfDone || isAuto) && !opts.force) {
+        skippedDone++;
+        continue;
+      }
 
       // 自动任务遵守每日重试上限和退避；手动“立即签到”不受限制。
       if ((opts.trigger || 'auto') === 'auto' && sameDay) {
@@ -2008,7 +2044,7 @@ async function runAll(options) {
       }
     }
 
-    const skipped = accounts.length - targets.length;
+    const skipped = skippedDone;
     try {
       await notifySummary(results, settings, skipped);
     } catch (e) { /* 汇总推送失败不影响结果 */ }
@@ -2193,7 +2229,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'saveState': {
           const patch = msg.patch || {};
           const allowed = {};
-          if (patch.accounts) allowed.accounts = patch.accounts;
+          if (patch.accounts) {
+            const stored = await chrome.storage.local.get('accounts');
+            const prev = Array.isArray(stored.accounts) ? stored.accounts : [];
+            const prevById = new Map(prev.map((a) => [a.id, a]));
+            allowed.accounts = patch.accounts.map((a) => {
+              const old = a && a.id ? prevById.get(a.id) : null;
+              if (!old) return a;
+              const merged = Object.assign({}, old, a);
+              const oldAt = (old.last && old.last.at) || 0;
+              const newAt = (a.last && a.last.at) || 0;
+              if (oldAt > newAt) merged.last = old.last;
+              const oldSnap = (old.snapshot && old.snapshot.at) || 0;
+              const newSnap = (a.snapshot && a.snapshot.at) || 0;
+              if (oldSnap > newSnap) merged.snapshot = old.snapshot;
+              return merged;
+            });
+          }
           if (patch.sites) allowed.sites = patch.sites;
           if (patch.settings) {
             const current = await chrome.storage.local.get('settings');
@@ -2265,6 +2317,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case 'resetSession': {
+          if (running) {
+            sendResponse({ ok: false, error: '签到进行中，请稍后再重置' });
+            break;
+          }
           await clearAllSessionRules();
           sendResponse({ ok: true });
           break;

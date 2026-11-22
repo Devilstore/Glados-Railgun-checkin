@@ -74,10 +74,10 @@ Actions 版是纯 HTTP 请求，**无法通过 Cloudflare Turnstile**。如果�
 
 ### 版本
 
-当前版本：`1.1.1`。
+当前版本：`1.1.2`。
 
 - `extension/` 目录始终是**最新源码**，适合开发者和本地加载；
-- 发布包按版本号命名，例如 `glados-checkin-extension-v1.1.1.zip`；
+- 发布包按版本号命名，例如 `glados-checkin-extension-v1.1.2.zip`；
 - 加载目录不变时扩展 ID 不变，账号数据保留；
 - 不要把 `latest` 当成唯一文件名；以 GitHub Releases 的 **Latest** 为准，版本化包便于回退和排查。
 
@@ -388,6 +388,14 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 - 推送兼容 Server酱。
 
 **2026-11**
+
+**1.1.2**
+
+- 修复跨零点后昨日签到回执（如 `Checkin! Got 14 Points`）被误显示为今日所得：历史回执加「上次」前缀、不再高亮积分；
+- 「今日是否已签」改用服务端日期判断，本地日期仅兜底；状态请求禁用缓存，避免跨零点读到昨日响应而误判；
+- 修复并发写日志丢条、保存账号时旧快照覆盖签到结果、签到中重置会话签错账号；
+- Cookie 注入规则限定到账号所属站点域，不再带到第三方请求；
+- 推送失败同时写入日志页；新增 `test-state.js`、`test-today.js`。
 
 **1.1.1**
 
