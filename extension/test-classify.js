@@ -42,7 +42,10 @@ const sandbox = {
       sessionRules: {}
     },
     notifications: { create: noop },
-    tabs: { create: asyncNoop, get: asyncNoop, update: asyncNoop, remove: asyncNoop },
+    tabs: {
+      create: asyncNoop, get: asyncNoop, update: asyncNoop, remove: asyncNoop,
+      onRemoved: { addListener: noop }
+    },
     scripting: { executeScript: asyncNoop },
     cookies: { getAll: async () => [] }
   }

@@ -1,0 +1,411 @@
+/**
+ * updater.js —— 检查 GitHub Release 并就地更新本地（未打包）扩展目录
+ *
+ * 为什么不能"直接覆盖"：
+ *   Chrome 扩展对自己的安装目录没有写权限（chrome-extension:// 是只读的）。
+ *   唯一可行方式是 File System Access API：用户手动授权一次目录句柄，
+ *   之后扩展就能把新文件写进去。目录句柄可存入 IndexedDB 复用。
+ *
+ * 因此完整流程是：
+ *   1) 请求 GitHub Releases API，比较版本号；
+ *   2) 用户点「更新」→ 复用已授权目录，或弹出目录选择器让用户选 extension 目录；
+ *   3) 下载 release zip，在内存里解压（DecompressionStream，无第三方库）；
+ *   4) 校验路径安全 + 校验 manifest.json 的版本，必要时先备份旧文件；
+ *   5) 逐文件写入，覆盖同名文件；
+ *   6) 提示用户重新加载扩展（或调用 chrome.runtime.reload()）。
+ *
+ * 本文件不做任何自动后台轮询：只在设置页打开时按需检查，避免无谓的外部请求。
+ */
+
+'use strict';
+
+(function () {
+  const REPO = 'Devilstore/Glados-Railgun-checkin';
+  const API_LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
+
+  const IDB_NAME = 'glados-updater';
+  const IDB_STORE = 'kv';
+  const DIR_KEY = 'extensionDirHandle';
+
+  const BACKUP_DIR = '_backup';
+  const SKIP_PATHS = new Set(['_backup']);
+
+  // ---------------------------------------------------------------- 小工具
+
+  function parseVer(v) {
+    const m = String(v == null ? '' : v).trim().replace(/^v/i, '')
+      .match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+    if (!m) return null;
+    return [Number(m[1] || 0), Number(m[2] || 0), Number(m[3] || 0)];
+  }
+
+  /** @returns {number} a>b 返回 1，相等 0，a<b 返回 -1 */
+  function compareVer(a, b) {
+    const pa = parseVer(a);
+    const pb = parseVer(b);
+    if (!pa || !pb) return 0;
+    for (let i = 0; i < 3; i++) {
+      if (pa[i] > pb[i]) return 1;
+      if (pa[i] < pb[i]) return -1;
+    }
+    return 0;
+  }
+
+  // ---------------------------------------------------------------- IndexedDB：存目录句柄
+
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('IndexedDB 打开失败'));
+    });
+  }
+
+  async function idbGet(key) {
+    const db = await openDb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const req = tx.objectStore(IDB_STORE).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  async function idbSet(key, value) {
+    const db = await openDb();
+    try {
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  // ---------------------------------------------------------------- 版本检查
+
+  /**
+   * 拉取最新正式 Release。
+   * @returns {{version:string,name:string,notes:string,htmlUrl:string,publishedAt:string,zip:object|null}}
+   */
+  async function fetchLatest() {
+    const resp = await fetch(API_LATEST, {
+      headers: { accept: 'application/vnd.github+json' },
+      cache: 'no-store'
+    });
+    if (resp.status === 404) throw new Error('仓库还没有正式 Release');
+    if (resp.status === 403) throw new Error('GitHub API 限流，请稍后再试');
+    if (!resp.ok) throw new Error(`GitHub API 返回 ${resp.status}`);
+
+    const data = await resp.json();
+    const version = String(data.tag_name || '').replace(/^v/i, '');
+    const assets = (data.assets || []).map((a) => ({
+      name: a.name,
+      url: a.browser_download_url,
+      size: a.size
+    }));
+    // 优先取名字里带版本号的 zip，其次任意 zip
+    let zip = assets.find((a) => /\.zip$/i.test(a.name) && a.name.includes(version));
+    if (!zip) zip = assets.find((a) => /\.zip$/i.test(a.name)) || null;
+
+    return {
+      version,
+      name: data.name || data.tag_name || '',
+      notes: data.body || '',
+      htmlUrl: data.html_url || '',
+      publishedAt: data.published_at || '',
+      assets,
+      zip
+    };
+  }
+
+  /**
+   * 检查是否有新版本。
+   * @returns {{current:string, latest:string|null, hasUpdate:boolean, release:object|null, error:string|null}}
+   */
+  async function check() {
+    const current = chrome.runtime.getManifest().version;
+    try {
+      const release = await fetchLatest();
+      const hasUpdate = compareVer(release.version, current) > 0;
+      return { current, latest: release.version, hasUpdate, release, error: null };
+    } catch (e) {
+      return { current, latest: null, hasUpdate: false, release: null, error: e.message || String(e) };
+    }
+  }
+
+  // ---------------------------------------------------------------- 目录授权
+
+  async function pickDir() {
+    if (typeof window.showDirectoryPicker !== 'function') {
+      throw new Error('当前浏览器不支持目录选择（需要 Chrome/Edge 103+）');
+    }
+    const handle = await window.showDirectoryPicker({ id: 'glados-extension-dir', mode: 'readwrite' });
+
+    let hasManifest = false;
+    try {
+      await handle.getFileHandle('manifest.json');
+      hasManifest = true;
+    } catch (e) { /* 目录里没有 manifest.json */ }
+
+    if (!hasManifest) {
+      const ok = window.confirm(
+        '所选目录里没有 manifest.json，可能不是扩展目录。\n' +
+        '请选择你在「加载已解压的扩展程序」时选的那个文件夹。\n\n仍要使用这个目录吗？'
+      );
+      if (!ok) throw new Error('已取消：目录不正确');
+    }
+
+    await idbSet(DIR_KEY, handle);
+    return handle;
+  }
+
+  /** 复用已授权目录；没有或权限失效则弹选择器。 */
+  async function ensureDir() {
+    let handle = null;
+    try { handle = await idbGet(DIR_KEY); } catch (e) { handle = null; }
+
+    if (handle && typeof handle.queryPermission === 'function') {
+      try {
+        const perm = await handle.queryPermission({ mode: 'readwrite' });
+        if (perm === 'granted') return handle;
+      } catch (e) { /* 句柄失效，走选择器 */ }
+    }
+    return pickDir();
+  }
+
+  /** 忘记已授权目录（下次重新选择）。 */
+  async function forgetDir() {
+    try { await idbSet(DIR_KEY, null); } catch (e) { /* ignore */ }
+  }
+
+  // ---------------------------------------------------------------- ZIP 解压
+
+  async function inflateRaw(raw) {
+    if (typeof DecompressionStream !== 'function') {
+      throw new Error('当前浏览器不支持解压 API（需要 Chrome/Edge 103+）');
+    }
+    const stream = new Response(raw).body.pipeThrough(new DecompressionStream('deflate-raw'));
+    const buf = await new Response(stream).arrayBuffer();
+    return new Uint8Array(buf);
+  }
+
+  /**
+   * 解析 zip，返回 [{ path, data:Uint8Array }]。只支持 store(0) / deflate(8)。
+   * 不用第三方库：读取中央目录 → 逐个定位本地头 → 解压数据段。
+   */
+  async function unzip(buffer) {
+    const u8 = new Uint8Array(buffer);
+    const dv = new DataView(buffer);
+    if (u8.length < 22) throw new Error('文件太小，不是 zip');
+
+    // 找 EOCD（结尾可能有注释，最多回扫 65557 字节）
+    let eocd = -1;
+    const floor = Math.max(0, u8.length - 65557);
+    for (let i = u8.length - 22; i >= floor; i--) {
+      if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error('不是有效的 zip 文件');
+
+    const count = dv.getUint16(eocd + 10, true);
+    let off = dv.getUint32(eocd + 16, true);
+    const out = [];
+
+    for (let i = 0; i < count; i++) {
+      if (off + 46 > u8.length || dv.getUint32(off, true) !== 0x02014b50) {
+        throw new Error('zip 中央目录损坏');
+      }
+      const method = dv.getUint16(off + 10, true);
+      const compSize = dv.getUint32(off + 20, true);
+      const nameLen = dv.getUint16(off + 28, true);
+      const extraLen = dv.getUint16(off + 30, true);
+      const commentLen = dv.getUint16(off + 32, true);
+      const localOff = dv.getUint32(off + 42, true);
+      const name = new TextDecoder('utf-8').decode(u8.subarray(off + 46, off + 46 + nameLen));
+      off += 46 + nameLen + extraLen + commentLen;
+
+      if (name.endsWith('/')) continue;                    // 目录项
+      if (compSize === 0xffffffff || localOff === 0xffffffff) {
+        throw new Error('不支持 ZIP64 格式');
+      }
+
+      if (dv.getUint32(localOff, true) !== 0x04034b50) throw new Error('zip 本地头损坏');
+      const lNameLen = dv.getUint16(localOff + 26, true);
+      const lExtraLen = dv.getUint16(localOff + 28, true);
+      const dataStart = localOff + 30 + lNameLen + lExtraLen;
+      const raw = u8.subarray(dataStart, dataStart + compSize);
+
+      let data;
+      if (method === 0) data = raw;
+      else if (method === 8) data = await inflateRaw(raw);
+      else throw new Error(`不支持的压缩方式 ${method}（${name}）`);
+
+      out.push({ path: name, data });
+    }
+    return out;
+  }
+
+  /**
+   * 规范化文件列表：
+   *   - 拒绝绝对路径 / 上跳路径 / 反斜杠路径（防目录穿越）
+   *   - 若所有文件都在同一个顶层目录下（且顶层没有 manifest.json），去掉该前缀
+   *   - 跳过备份目录
+   */
+  function normalizeFiles(files) {
+    const safe = [];
+    for (const f of files) {
+      let p = String(f.path || '').replace(/\\/g, '/');
+      if (!p) continue;
+      if (p.startsWith('/') || /^[a-zA-Z]:/.test(p)) continue;
+      const parts = p.split('/').filter((s) => s && s !== '.');
+      if (!parts.length) continue;
+      if (parts.some((s) => s === '..')) continue;
+      if (SKIP_PATHS.has(parts[0])) continue;
+      safe.push({ path: parts.join('/'), parts, data: f.data });
+    }
+
+    // 是否需要剥离顶层目录：
+    // 只有在"剥离后能得到根 manifest.json"时才剥离。
+    // 这样 `extension/manifest.json` 这类打包方式能正确处理，
+    // 而只有 `icons/*.png` 的片段不会被误剥（那会写错位置）。
+    const hasRootManifest = safe.some((f) => f.path === 'manifest.json');
+    if (!hasRootManifest && safe.length) {
+      const first = safe[0].parts[0];
+      const allUnder = safe.every((f) => f.parts.length > 1 && f.parts[0] === first);
+      const stripped = allUnder
+        ? safe.map((f) => ({
+            path: f.parts.slice(1).join('/'),
+            parts: f.parts.slice(1),
+            data: f.data
+          }))
+        : null;
+      if (stripped && stripped.some((f) => f.path === 'manifest.json')) return stripped;
+    }
+    return safe;
+  }
+
+  // ---------------------------------------------------------------- 写入
+
+  async function readExisting(dir, parts) {
+    let node = dir;
+    for (let i = 0; i < parts.length - 1; i++) {
+      node = await node.getDirectoryHandle(parts[i], { create: false });
+    }
+    const fh = await node.getFileHandle(parts[parts.length - 1], { create: false });
+    return new Uint8Array(await (await fh.getFile()).arrayBuffer());
+  }
+
+  async function writeOne(root, parts, data) {
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      node = await node.getDirectoryHandle(parts[i], { create: true });
+    }
+    const fh = await node.getFileHandle(parts[parts.length - 1], { create: true });
+    const w = await fh.createWritable();
+    try {
+      await w.write(data);
+    } finally {
+      await w.close();
+    }
+  }
+
+  /** 把将被覆盖的旧文件复制到 _backup/v<旧版本>/ 下。 */
+  async function backupExisting(dir, files, oldVersion) {
+    const prefix = `${BACKUP_DIR}/v${oldVersion || 'unknown'}`;
+    let saved = 0;
+    for (const f of files) {
+      let old = null;
+      try { old = await readExisting(dir, f.parts); } catch (e) { continue; }  // 新文件，无需备份
+      await writeOne(dir, [...prefix.split('/'), ...f.parts], old);
+      saved++;
+    }
+    return saved;
+  }
+
+  /**
+   * 执行更新。
+   * @param {object} release   check() 返回的 release
+   * @param {object} opts      { backup:boolean, onProgress:(text)=>void }
+   * @returns {{version:string, written:number, backupFiles:number}}
+   */
+  async function apply(release, opts) {
+    const options = opts || {};
+    const progress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+    if (!release || !release.zip) throw new Error('该 Release 没有可用的 zip 附件');
+
+    const dir = await ensureDir();
+    const oldVersion = chrome.runtime.getManifest().version;
+
+    progress('正在下载安装包…');
+    const resp = await fetch(release.zip.url, { cache: 'no-store' });
+    if (!resp.ok) throw new Error(`下载失败：HTTP ${resp.status}`);
+    const buf = await resp.arrayBuffer();
+
+    progress('正在解压…');
+    const files = normalizeFiles(await unzip(buf));
+    if (!files.length) throw new Error('压缩包是空的');
+
+    const man = files.find((f) => f.path === 'manifest.json');
+    if (!man) throw new Error('压缩包里没有 manifest.json，可能不是扩展包');
+
+    // 校验包内 manifest 的版本，避免版本号与 tag 不一致时写入错误内容
+    let pkgVersion = '';
+    try {
+      pkgVersion = String(JSON.parse(new TextDecoder('utf-8').decode(man.data)).version || '');
+    } catch (e) { /* 解析失败下面会报 */ }
+    if (!pkgVersion) throw new Error('压缩包里的 manifest.json 无法解析');
+    if (compareVer(pkgVersion, release.version) !== 0) {
+      throw new Error(`包内版本 ${pkgVersion} 与 Release ${release.version} 不一致，已中止`);
+    }
+    if (compareVer(pkgVersion, oldVersion) <= 0) {
+      throw new Error(`包内版本 ${pkgVersion} 不比当前 ${oldVersion} 新，已中止`);
+    }
+
+    let backupFiles = 0;
+    if (options.backup !== false) {
+      progress('正在备份旧文件…');
+      try {
+        backupFiles = await backupExisting(dir, files, oldVersion);
+      } catch (e) {
+        // 备份失败不阻断更新，但要让用户知道
+        backupFiles = -1;
+      }
+    }
+
+    progress(`正在写入 ${files.length} 个文件…`);
+    let written = 0;
+    for (const f of files) {
+      await writeOne(dir, f.parts, f.data);
+      written++;
+    }
+
+    return { version: pkgVersion, written, backupFiles };
+  }
+
+  // ---------------------------------------------------------------- 导出
+
+  window.Updater = {
+    REPO,
+    parseVer,
+    compareVer,
+    fetchLatest,
+    check,
+    apply,
+    ensureDir,
+    forgetDir,
+    unzip,
+    normalizeFiles,
+    inflateRaw
+  };
+})();

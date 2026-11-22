@@ -18,7 +18,7 @@ const ALL_RESOURCE_TYPES = [
 const RULE_ID_BASE = 700000;
 const LOG_LIMIT = 300;
 
-const EXT_VERSION = '1.0.3';
+const EXT_VERSION = '1.1.0';
 
 
 const DEFAULT_SITES = [
@@ -76,6 +76,11 @@ const DEFAULT_SETTINGS = {
   maxDelayMinutes: 45,    // 目标小时内随机延迟上限（分钟）
   notifyEnabled: true,    // 桌面通知
   autoClickTurnstile: false, // 自动点击 Cloudflare 验证框（实验性）
+  humanVerify: true,      // 被 Cloudflare 拒绝后切前台等人工验证，通过后自动重试
+  keepTabOnVerify: true,  // 人工验证未完成时保留签到标签页
+  foregroundOnManual: true, // 单账号「测试签到」时把签到页切到前台
+  updateCheckEnabled: true, // 打开设置页时检查 GitHub Release
+  updateBackup: true,     // 更新前把被覆盖的文件备份到 _backup/
   skipIfDone: true,       // 今日已签则跳过
   pushdeerKey: '',        // PushDeer SendKey
   serverchanKey: '',      // ServerChan SendKey
@@ -239,11 +244,42 @@ function authModeOf(acc) {
 // declarativeNetRequest：把指定账号的 Cookie / UA 注入到单个标签页
 // ============================================================================
 
-let ruleSeq = 0;
+// rules 的 id 必须唯一。用「空闲 ID 分配」而不是「tabId 混算」：
+// 之前 id = BASE + (tabId%20000)*4 + seq 在两条规则之间可能撞号，
+// 撞号时 updateSessionRules 会把别人的规则删掉（保留标签页会同时存在多条规则）。
+const usedRuleIds = new Set();
+let ruleIdSyncPromise = null;
 
-function nextRuleId(tabId) {
-  ruleSeq = (ruleSeq + 1) % 100000;
-  return RULE_ID_BASE + ((tabId % 20000) * 4) + ruleSeq;
+/**
+ * Service Worker 被回收后再启动时，内存中的 usedRuleIds 是空的，
+ * 但上一轮创建的 session 规则仍然存在。不同步就会分配到已占用的 ID，
+ * 随后 removeRuleIds 会把那条旧规则删掉。首次分配前先同步一次。
+ */
+function ensureRuleIdSync() {
+  if (!ruleIdSyncPromise) {
+    ruleIdSyncPromise = (async () => {
+      try {
+        const rules = await chrome.declarativeNetRequest.getSessionRules();
+        (rules || []).forEach((r) => usedRuleIds.add(r.id));
+      } catch (e) { /* 读取失败就按空集合处理 */ }
+    })();
+  }
+  return ruleIdSyncPromise;
+}
+
+function nextRuleId() {
+  for (let id = RULE_ID_BASE + 1; id <= RULE_ID_BASE + 20000; id++) {
+    if (!usedRuleIds.has(id)) {
+      usedRuleIds.add(id);
+      return id;
+    }
+  }
+  // 极端情况：ID 用尽，退回一个肯定会冲突的范围外值
+  return RULE_ID_BASE + 20001;
+}
+
+function releaseRuleId(ruleId) {
+  if (ruleId) usedRuleIds.delete(ruleId);
 }
 
 /**
@@ -267,7 +303,8 @@ async function addTabScopedRule(tabId, account, site) {
 
   if (!headers.length) return null;
 
-  const ruleId = nextRuleId(tabId);
+  await ensureRuleIdSync();
+  const ruleId = nextRuleId();
   const rule = {
     id: ruleId,
     priority: 1,
@@ -299,6 +336,8 @@ async function removeRule(ruleId) {
     await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [ruleId] });
   } catch (e) {
     // 规则可能已被清理，忽略
+  } finally {
+    releaseRuleId(ruleId);
   }
 }
 
@@ -309,6 +348,7 @@ async function clearAllSessionRules() {
       await chrome.declarativeNetRequest.updateSessionRules({
         removeRuleIds: rules.map((r) => r.id)
       });
+      rules.forEach((r) => releaseRuleId(r.id));
     }
   } catch (e) { /* ignore */ }
 }
@@ -363,6 +403,26 @@ async function clickCheckinInPage() {
       if (!again) continue;
       btn = again;
       if (!isDone(again)) break;
+    }
+  }
+
+  // disabled 但文案不是完成态 = 页面还在 loading。
+  // 直接点它是无效动作，随后会白等 100 秒，所以先等它可用。
+  if (btn.disabled === true && !isDone(btn) && !DONE_TEXT.test(btnText(btn))) {
+    for (let i = 0; i < 20; i++) {
+      await sleep(500);
+      const again = findButton();
+      if (again) btn = again;
+      if (btn && btn.disabled !== true) break;
+    }
+    // 等了 10 秒还是禁用（且不像已签到）→ 直接报出来，不再空等
+    if (btn && btn.disabled === true && !isDone(btn) && !DONE_TEXT.test(btnText(btn))) {
+      return {
+        ok: false,
+        reason: 'button-disabled',
+        text: btnText(btn),
+        className: String(btn.className || '')
+      };
     }
   }
 
@@ -618,7 +678,23 @@ async function readTurnstileState(tabId) {
   }
 }
 
-function watchTurnstileDuringClick(tabId, settings) {
+/**
+ * 人机验证事件记录器。
+ * 自动点击是「悄悄发生」的动作——不记录的话用户完全不知道扩展动过鼠标。
+ * 这里把所有 Turnstile 相关动作收集成文本片段，最终写进日志的 detail。
+ */
+function tsNote(events, text) {
+  if (!Array.isArray(events) || !text) return;
+  events.push(text);
+}
+
+function turnstileSummary(events) {
+  if (!Array.isArray(events) || !events.length) return '';
+  // ⚙ 前缀让「扩展动过鼠标」这类动作在日志里一眼可见
+  return `⚙ ${events.join('、')}`;
+}
+
+function watchTurnstileDuringClick(tabId, settings, events) {
   let stopped = false;
   let focused = false;
   let notified = false;
@@ -629,11 +705,15 @@ function watchTurnstileDuringClick(tabId, settings) {
     while (!stopped && Date.now() < deadline) {
       const state = await readTurnstileState(tabId);
       if (!state) return;
-      if (state.token) return;
+      if (state.token) {
+        if (autoTried) tsNote(events, '点击期间取得令牌');
+        return;
+      }
       if (state.frame) {
         if (!focused) {
           focused = true;
           await focusTab(tabId);
+          tsNote(events, '检测到验证框，页面已切前台');
         }
         if (!notified) {
           notified = true;
@@ -643,14 +723,17 @@ function watchTurnstileDuringClick(tabId, settings) {
             state.frame.visible && chrome.debugger) {
           autoTried = true;
           try {
-            await clickTurnstileCheckbox(tabId, state.frame);
+            const point = await clickTurnstileCheckbox(tabId, state.frame);
+            tsNote(events, `已自动点击验证框（${point && point.source ? point.source : '未知位置'}）`);
           } catch (e) {
+            tsNote(events, `自动点击失败：${String(e && e.message || e).slice(0, 60)}`);
             console.warn('[turnstile] 自动点击失败', e);
           }
         }
       }
       await sleep(700);
     }
+    if (autoTried) tsNote(events, '100 秒内未见令牌');
   })().catch((e) => console.warn('[turnstile watcher]', e));
 
   return {
@@ -659,7 +742,7 @@ function watchTurnstileDuringClick(tabId, settings) {
   };
 }
 
-async function prepareTurnstile(tabId, settings) {
+async function prepareTurnstile(tabId, settings, events) {
   let state = {};
   try {
     const res = await chrome.scripting.executeScript({
@@ -672,6 +755,7 @@ async function prepareTurnstile(tabId, settings) {
     return { needed: false, ok: true };
   }
   if (!state.frame && !state.token) return { needed: false, ok: true };
+  // 已有令牌 = 静默通过，属于正常情况，不写日志（避免日常噪音）
   if (state.token) return { needed: true, ok: true };
 
   // 某些 Turnstile 会静默完成，先给页面一点时间。
@@ -679,24 +763,33 @@ async function prepareTurnstile(tabId, settings) {
     return { needed: true, ok: true };
   }
 
-  // 先让页面可见，避免 Cloudflare 在隐藏标签页里一直等待交互。
+  // 从这里开始才算「需要交互」——之后每个动作都记日志
   await focusTab(tabId);
 
   let autoClicked = false;
   if (settings.autoClickTurnstile && state.frame.visible && chrome.debugger) {
     try {
-      await clickTurnstileCheckbox(tabId, state.frame);
+      const point = await clickTurnstileCheckbox(tabId, state.frame);
       autoClicked = true;
+      tsNote(events, `已自动点击验证框（${point && point.source ? point.source : '未知位置'}）`);
     } catch (e) {
+      tsNote(events, `自动点击失败：${String(e && e.message || e).slice(0, 60)}`);
       console.warn('[turnstile] 自动点击失败', e);
     }
     if (await waitTurnstileToken(tabId, 15000)) {
+      tsNote(events, '自动点击后取得令牌');
       return { needed: true, ok: true, auto: true };
     }
+    if (autoClicked) tsNote(events, '自动点击后 15 秒内仍无令牌');
+  } else if (!settings.autoClickTurnstile) {
+    tsNote(events, '自动点击已关闭，已切前台等人工');
+  } else {
+    tsNote(events, '验证框不可见或缺少调试权限，已切前台等人工');
   }
 
   notifyTurnstile();
   const ok = await waitTurnstileToken(tabId, 90000);
+  if (!autoClicked) tsNote(events, ok ? '人工验证完成' : '等待人工验证超时 90 秒');
   return { needed: true, ok, auto: autoClicked };
 }
 
@@ -889,17 +982,54 @@ function classifyResult(data, fallbackText) {
  */
 let identityGuard = new Map();
 
+/**
+ * 等待标签页加载完成。
+ *
+ * 注意两种失败要区分开：
+ *   1) 标签页被关闭 / 导航失败 → chrome.tabs.get 抛异常，属于致命错误
+ *   2) 加载慢（Cloudflare 挑战、代理慢）→ status 长时间停在 loading
+ * 对第 2 种，超时后再用 document.readyState 兜底判断——页面脚本可能已经能跑，
+ * 只是 Chrome 还没把 status 置为 complete。
+ */
 async function waitTabComplete(tabId, timeoutMs) {
-  const deadline = Date.now() + (timeoutMs || 15000);
+  const deadline = Date.now() + (timeoutMs || 20000);
+  let goneCount = 0;
+
   while (Date.now() < deadline) {
     try {
       const tab = await chrome.tabs.get(tabId);
-      if (tab && tab.status === 'complete') return true;
+      if (!tab) {
+        goneCount++;
+        if (goneCount >= 3) return false;
+      } else if (tab.status === 'complete') {
+        return true;
+      } else {
+        goneCount = 0;
+      }
     } catch (e) {
-      return false; // tab 已被关闭
+      // 偶发的瞬时错误（例如标签页正在切换进程）不能直接判死
+      goneCount++;
+      if (goneCount >= 5) return false;
     }
     await sleep(400);
   }
+
+  // 超时兜底：能注入脚本且文档已可用 → 视为可用
+  try {
+    const res = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => ({
+        ready: document.readyState,
+        hasBtn: !!document.querySelector('button.ckb'),
+        title: document.title
+      })
+    });
+    const r = (res && res[0] && res[0].result) || {};
+    if (r.hasBtn || r.ready === 'complete' || r.ready === 'interactive') {
+      return true;
+    }
+  } catch (e) { /* 无法注入，判定失败 */ }
+
   return false;
 }
 
@@ -1010,8 +1140,18 @@ async function verifyIdentity(tabId, account, result, mode) {
  * 导航到指定路径并等加载完成。
  * @returns {{tabId:number|null, ruleId:number|null, ok:boolean}}
  */
-async function openSessionTab(account, site, path) {
-  const tab = await chrome.tabs.create({ url: 'about:blank', active: false });
+/**
+ * 打开临时标签页并挂上账号身份。
+ * @param {object} opts { foreground:boolean, timeoutMs:number }
+ *   foreground=true 时把标签页切到前台并聚焦窗口（人工验证 / 调试需要）
+ */
+async function openSessionTab(account, site, path, opts) {
+  const options = opts || {};
+  const url = `https://${site.domain}${path}`;
+  const tab = await chrome.tabs.create({
+    url: 'about:blank',
+    active: options.foreground === true
+  });
   const tabId = tab.id;
   let ruleId = null;
 
@@ -1020,17 +1160,75 @@ async function openSessionTab(account, site, path) {
     ruleId = await addTabScopedRule(tabId, account, site);
   }
 
-  await chrome.tabs.update(tabId, { url: `https://${site.domain}${path}` });
-  const ok = await waitTabComplete(tabId, 20000);
+  if (options.foreground === true) await focusTab(tabId);
+
+  await chrome.tabs.update(tabId, { url });
+  let ok = await waitTabComplete(tabId, options.timeoutMs || 35000);
+
+  // 首轮失败再导航一次：常见于代理刚建立连接 / 上一轮 DNR 规则刚生效
+  if (!ok) {
+    try {
+      await chrome.tabs.update(tabId, { url });
+      ok = await waitTabComplete(tabId, options.timeoutMs || 25000);
+    } catch (e) { /* tab 已关闭 */ }
+  }
+
   return { tabId, ruleId, ok };
 }
 
-async function closeSessionTab(tabId, ruleId) {
-  try { if (ruleId) await removeRule(ruleId); } catch (e) { /* ignore */ }
-  if (tabId != null) {
-    await sleep(300);
+/**
+ * 保留的签到标签页登记表：tabId → { accountId, ruleId }
+ *
+ * 为什么需要：
+ *   1) 需要人工验证时标签页会被保留，如果不登记，下一轮签到会再开一个，
+ *      失败几次就堆一堆残留标签页；
+ *   2) cookie 模式下这个标签页必须**继续保留 DNR 规则**，否则它会退化成
+ *      浏览器自己的登录态 —— 用户在保留页里完成验证后，签到会落到别的账号上。
+ * 因此：保留期间规则不动，标签页真正关闭时才清理规则。
+ */
+const keptTabs = new Map();
+
+function registerKeptTab(tabId, accountId, ruleId) {
+  if (tabId == null) return;
+  keptTabs.set(tabId, { accountId, ruleId: ruleId || null });
+}
+
+/** 关掉某账号遗留的保留标签页（开始新一轮签到前调用）。 */
+async function closeKeptTabForAccount(accountId) {
+  for (const [tabId, info] of Array.from(keptTabs.entries())) {
+    if (info.accountId !== accountId) continue;
+    keptTabs.delete(tabId);
+    try { if (info.ruleId) await removeRule(info.ruleId); } catch (e) { /* ignore */ }
     try { await chrome.tabs.remove(tabId); } catch (e) { /* 已关闭 */ }
   }
+}
+
+if (chrome.tabs && chrome.tabs.onRemoved) {
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    const info = keptTabs.get(tabId);
+    if (!info) return;
+    keptTabs.delete(tabId);
+    if (info.ruleId) {
+      removeRule(info.ruleId).catch(() => { /* ignore */ });
+    }
+  });
+}
+
+/**
+ * 关闭临时标签页。
+ * @param {boolean} keepTab true 时保留标签页（人工验证未完成时用）；
+ *   此时**不移除 DNR 规则**，让页面继续使用该账号身份，直到标签页被关闭。
+ * @param {string} accountId 保留时用于登记，便于下一轮清理
+ */
+async function closeSessionTab(tabId, ruleId, keepTab, accountId) {
+  if (keepTab) {
+    registerKeptTab(tabId, accountId, ruleId);
+    return;
+  }
+  try { if (ruleId) await removeRule(ruleId); } catch (e) { /* ignore */ }
+  if (tabId == null) return;
+  await sleep(300);
+  try { await chrome.tabs.remove(tabId); } catch (e) { /* 已关闭 */ }
 }
 
 /**
@@ -1118,13 +1316,22 @@ async function getCalendar(account, site, days) {
  *   force   —— 不因"本地记录今日已签"而跳过
  *   reclick —— 调试用：即使服务端已有今日记录也真实点击（正常立即签到不传）
  */
+/**
+ * 执行积分兑换。
+ * 请求格式与 Python 版（checkin.py 的 API.exchange）保持一致：
+ *   POST /api/user/exchange，body 为 application/x-www-form-urlencoded，字段 planType
+ * 之前这里发的是 JSON，与已知可用的 Python 实现不同，可能导致兑换静默失败。
+ */
 async function exchangeInPage(plan) {
   try {
     const resp = await fetch('/api/user/exchange', {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ planType: plan })
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'accept': 'application/json, text/plain, */*'
+      },
+      body: new URLSearchParams({ planType: plan }).toString()
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
@@ -1146,6 +1353,9 @@ async function checkinOne(account, site, settings, trigger, opts) {
   const mode = authModeOf(account);
   let tabId = null;
   let ruleId = null;
+  // 人机验证事件收集器：自动点击、切前台、静默通过都记进 detail。
+  // 放在函数作用域，保证任何提前 return 的分支也能被记录。
+  const tsEvents = [];
 
   const result = {
     accountId: account.id,
@@ -1168,18 +1378,26 @@ async function checkinOne(account, site, settings, trigger, opts) {
     servedTodayPoints: null,
     checkinDays: null,
     exchangeOk: false,
+    turnstileAuto: false,
     elapsed: 0
   };
 
   try {
     acquireKeepAlive();
 
+    // 0. 清掉上次失败遗留的保留标签页，避免越积越多
+    await closeKeptTabForAccount(account.id);
+
     // 1~3. 打开临时标签页并挂上本账号身份
-    const opened = await openSessionTab(account, site, site.checkinPath || '/console/checkin');
+    const foreground = options.foreground === true ||
+      (trigger === 'manual' && options.foreground !== false && settings.foregroundOnManual !== false);
+    const opened = await openSessionTab(account, site, site.checkinPath || '/console/checkin',
+      { foreground });
     tabId = opened.tabId;
     ruleId = opened.ruleId;
     if (!opened.ok) {
-      result.message = '页面加载超时';
+      result.message = '页面加载超时（已重试一次导航）';
+      result.detail = `请确认能正常打开 https://${site.domain}${site.checkinPath || '/console/checkin'}`;
       return result;
     }
 
@@ -1244,13 +1462,12 @@ async function checkinOne(account, site, settings, trigger, opts) {
       const stay = minStay + Math.random() * Math.max(0, maxStay - minStay);
       await sleep(stay);
 
-      const turnstile = await prepareTurnstile(tabId, settings);
+      // 人机验证事件收集器已在外层声明（tsEvents）
+      const turnstile = await prepareTurnstile(tabId, settings, tsEvents);
       if (turnstile.needed && !turnstile.ok) {
         result.status = 'turnstile';
         result.message = '需要完成 Cloudflare 人机验证；签到页已打开，请手动完成后再试';
-        result.detail = turnstile.auto
-          ? '自动点击验证框后仍未获得令牌，已转为人工验证'
-          : '检测到 Cloudflare 验证框，等待人工完成超时';
+        result.detail = turnstileSummary(tsEvents) || '检测到 Cloudflare 验证框，等待人工完成超时';
         return result;
       }
 
@@ -1260,7 +1477,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
         func: clickCheckinInPage
       });
       // 有些 Turnstile 是点击签到按钮后才出现，点击期间也要盯着并激活页面。
-      const watcher = turnstile.needed ? null : watchTurnstileDuringClick(tabId, settings);
+      const watcher = turnstile.needed ? null : watchTurnstileDuringClick(tabId, settings, tsEvents);
       let clickRes;
       try {
         clickRes = await clickPromise;
@@ -1277,6 +1494,11 @@ async function checkinOne(account, site, settings, trigger, opts) {
       }
       if (r.reason === 'button-not-found') {
         result.message = '未找到签到按钮（页面结构可能已变化）';
+        return result;
+      }
+      if (r.reason === 'button-disabled') {
+        result.message = '签到按钮一直处于禁用状态，页面可能未就绪或需要先完成验证';
+        result.detail = `按钮文案：${r.text || '(空)'}；class：${r.className || '(空)'}`;
         return result;
       }
       if (r.reason === 'no-response') {
@@ -1333,6 +1555,41 @@ async function checkinOne(account, site, settings, trigger, opts) {
           message: cls.message
         });
         result.detail = `诊断：点击后约 ${r.waitedMs || '?'} ms 收到服务端响应`;
+      }
+
+      // ---------- Cloudflare 被拒后的补救：切前台 + 等人工验证 + 重试一次 ----------
+      // 后台标签页里交互式 Turnstile 拿不到令牌，服务端会回 code=5。
+      // 这时把标签页放到前台，等用户手动过验证，拿到令牌后自动再点一次。
+      if (result.status === 'turnstile' && settings.humanVerify !== false) {
+        await focusTab(tabId);
+        notifyTurnstile();
+        result.detail = (result.detail ? result.detail + '；' : '') +
+          '已在验证弹窗等待人工完成（最多 90 秒）';
+
+        const gotToken = await waitTurnstileToken(tabId, 90000);
+        if (gotToken) {
+          const retryRes = await chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: clickCheckinInPage
+          });
+          const rr = (retryRes && retryRes[0] && retryRes[0].result) || {};
+          if (rr.data) {
+            const cls2 = classifyResult(rr.data, rr.text);
+            Object.assign(result, {
+              status: cls2.status,
+              points: cls2.points,
+              message: cls2.message
+            });
+            result.detail = `人工完成验证后重试成功（${rr.waitedMs || '?'} ms）`;
+          } else {
+            result.message = '人机验证已通过，但重试未拿到签到结果，请手动确认';
+            result.detail = `${result.detail}；重试返回 reason=${rr.reason || 'unknown'}`;
+          }
+        } else {
+          result.message = '需要人机验证：签到页已切到前台，请完成 Cloudflare 验证后重试';
+          result.detail = (result.detail || '') + '；等待 90 秒未取得令牌';
+        }
       }
     }
 
@@ -1409,8 +1666,22 @@ async function checkinOne(account, site, settings, trigger, opts) {
   } finally {
     result.elapsed = Date.now() - started;
 
+    // 把 Turnstile 相关动作并入 detail（任何分支都不漏记，且不覆盖已有结论）
+    const tsText = turnstileSummary(tsEvents);
+    if (tsText && String(result.detail || '').indexOf(tsText) === -1) {
+      result.detail = result.detail ? `${result.detail}；${tsText}` : tsText;
+    }
+    result.turnstileAuto = tsEvents.some((s) => s.indexOf('已自动点击') === 0);
+
+    // 人工验证未完成时保留标签页，让用户能直接接着操作
+    const keepTab = result.status === 'turnstile' && settings.keepTabOnVerify !== false;
+
     // 清理动作本身不能抛异常，否则会覆盖上面的 return
-    await closeSessionTab(tabId, ruleId);
+    await closeSessionTab(tabId, ruleId, keepTab, account.id);
+    if (keepTab) {
+      result.detail = (result.detail ? result.detail + '；' : '') +
+        '签到页已保留在前台，完成验证后可回来点「测试签到」';
+    }
 
     // 先写日志、再更新账号：日志是最重要的排查依据，任何一步失败都不能
     // 让整条记录丢失
@@ -1581,13 +1852,30 @@ async function probeBrowserLogin(domain) {
 
 const STATUS_TEXT = {
   success: '签到成功',
-  repeat: '今日已签到',
+  repeat: '重复签到',
   turnstile: '验证未通过',
   device: '设备不一致',
   fail: '签到失败'
 };
 
-async function sendPushNotification(settings, title, body) {
+/**
+ * 推送一条消息到所有已配置的后端。
+ *
+ * 换行处理必须按后端区分，这与 Python 版的行为一致：
+ *   - PushDeer：Python 用的是 pypushdeer 的 send_text()，即 type=text（纯文本），
+ *     单 \n 就换行。之前这里传了 type=markdown，Markdown 渲染器会把单 \n
+ *     当作软换行合并成一行，导致推送内容挤成一段。
+ *   - Server酱：按 Markdown 渲染，单 \n 不换行，必须行尾两空格 + \n 做硬换行。
+ *
+ * @param {string[]|string} content 推荐传行数组；传字符串时按 \n 拆分
+ */
+async function sendPushNotification(settings, title, content) {
+  const lines = Array.isArray(content)
+    ? content.map((s) => String(s))
+    : String(content == null ? '' : content).split('\n');
+  const pushdeerBody = lines.join('\n');        // 纯文本
+  const serverchanBody = lines.join('  \n');    // Markdown 硬换行
+
   const results = [];
   const timeout = () => {
     const ctrl = new AbortController();
@@ -1604,8 +1892,8 @@ async function sendPushNotification(settings, title, body) {
         body: new URLSearchParams({
           pushkey: settings.pushdeerKey,
           text: title,
-          desp: body,
-          type: 'markdown'
+          desp: pushdeerBody,
+          type: 'text'
         }),
         signal: t.signal
       });
@@ -1632,7 +1920,7 @@ async function sendPushNotification(settings, title, body) {
       const resp = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ title, desp: body }),
+        body: new URLSearchParams({ title, desp: serverchanBody }),
         signal: t.signal
       });
       const data = await resp.json().catch(() => ({}));
@@ -1683,23 +1971,26 @@ async function notifySummary(results, settings, skipped) {
   const failed = results.length - success - repeat;
   const title = `GLaDOS 签到 · 成功 ${success} · 失败 ${failed} · 重复 ${repeat}`;
 
-  // 与 Python 脚本的 Report 保持一致：
+  // 与 Python 脚本的 Report.render 保持一致：
   // #1  大号  ✅ 签到成功  glados.cloud  获得 20 积分 · 剩余 48 天 · 总 409 积分
+  // 账号名只在「多账号且至少一个有名字」时显示（单账号时省略，减少噪音）。
+  const showName = results.length > 1 && results.some((r) => r.accountName);
   const lines = results.map((r, i) => {
     const emoji = r.status === 'success' ? '✅'
       : r.status === 'repeat' ? '🔄' : '🔴';
     const label = STATUS_TEXT[r.status] || r.status;
     const days = r.leftDays != null ? `${r.leftDays} 天` : 'None 天';
     const total = r.pointsTotal != null ? `${r.pointsTotal} 积分` : 'None 积分';
-    let line = `#${i + 1}  ${r.accountName || '未命名'}  ${emoji} ${label}  ${r.domain}  ` +
+    const nameCell = showName ? `${r.accountName || '未命名'}  ` : '';
+    let line = `#${i + 1}  ${nameCell}${emoji} ${label}  ${r.domain}  ` +
       `获得 ${r.points || 0} 积分 · 剩余 ${days} · 总 ${total}`;
     if (r.exchange) line += ` · ${r.exchange}`;
     return line;
   });
   if (skipped > 0) lines.push(`另有 ${skipped} 个账号跳过`);
-  const body = lines.join('\n');
 
-  const pushResults = await sendPushNotification(settings || {}, title, body);
+  // 传行数组，由 sendPushNotification 按后端各自决定换行方式
+  const pushResults = await sendPushNotification(settings || {}, title, lines);
   logPushFailures(pushResults);
 
   if (!settings || settings.notifyEnabled === false) return;
@@ -1708,7 +1999,7 @@ async function notifySummary(results, settings, skipped) {
       type: 'basic',
       iconUrl: chrome.runtime.getURL('icons/icon128.png'),
       title: failed === 0 ? `✅ ${title}` : `⚠️ ${title}`,
-      message: body
+      message: lines.join('\n')
     }, () => {
       if (chrome.runtime.lastError) {
         console.warn('[notification summary]', chrome.runtime.lastError.message);
@@ -1755,7 +2046,10 @@ async function runAll(options) {
 
       const sameDay = acc.last && acc.last.date === today;
       const done = sameDay && (acc.last.status === 'success' || acc.last.status === 'repeat');
-      if (done && settings.skipIfDone && !opts.force) continue;
+      // 自动任务每天只跑一次：成功后不再回头重复签。
+      // 否则把「今日已签则跳过」关掉时，tick 每 15 分钟都会把所有账号重签一遍。
+      // 手动「立即签到」传 force，仍可强制重跑。
+      if (done && (settings.skipIfDone || isAuto) && !opts.force) continue;
 
       // 自动任务遵守每日重试上限和退避；手动“立即签到”不受限制。
       if ((opts.trigger || 'auto') === 'auto' && sameDay) {
@@ -1798,8 +2092,10 @@ async function runAll(options) {
       // 每个账号之间加一点间隔，降低集中请求特征
       if (results.length > 0) await sleep(1500 + Math.random() * 2500);
       try {
+        // 批量运行一律后台执行：否则每个账号都会把窗口抢到前台。
+        // 只有单账号「立即签到」才按设置决定是否前台展示。
         const r = await checkinOne(t.acc, t.site, settings, opts.trigger || 'auto',
-          { force: !!opts.force, suppressNotify: true });
+          { force: !!opts.force, suppressNotify: true, foreground: false });
         results.push(r);
       } catch (e) {
         // 单账号异常不中断整轮
@@ -1884,7 +2180,9 @@ async function tick() {
       if (a.last.retryExhausted) return false;
       if (a.last.nextRetryAt && a.last.nextRetryAt > Date.now()) return false;
     }
-    return !(done && settings.skipIfDone);
+    // tick 只负责自动调度：已签成功就结束，不看 skipIfDone，
+    // 否则关掉该开关会让自动任务每 15 分钟重跑一轮。
+    return !done;
   });
 
   if (!pending.length) {
@@ -2051,7 +2349,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               break;
             }
             // 直接签到：服务端已有今日记录时返回“已签到”，不再强行重复点击。
-            const r = await checkinOne(acc, site, settings, 'manual', { force: true });
+            // 单账号测试默认把签到页切到前台，方便观察点击与完成人机验证。
+            const r = await checkinOne(acc, site, settings, 'manual',
+              { force: true, foreground: msg.foreground !== false });
             sendResponse({ ok: true, result: r });
           } finally {
             running = false;
@@ -2105,7 +2405,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const results = await sendPushNotification(
             settings,
             'GLaDOS 自动签到测试推送',
-            '如果你看到这条消息，说明推送配置已生效。'
+            [
+              '如果你看到这条消息，说明推送配置已生效。',
+              '第 1 行：换行自检',
+              '第 2 行：如果三行分开显示，说明换行正确'
+            ]
           );
           sendResponse({
             ok: results.length > 0 && results.every((r) => r.ok),

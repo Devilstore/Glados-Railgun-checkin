@@ -26,6 +26,9 @@ extension/*.zip
 *.crx
 *.pem
 
+# 扩展内置更新时的旧文件备份（由 updater 生成）
+extension/_backup/
+
 # 发布临时文件与日志
 SHA256SUMS.txt
 release-notes.md

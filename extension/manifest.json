@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "GLaDOS 自动签到",
-  "version": "1.0.3",
-  "description": "多账号、多站点自动签到。支持直接用浏览器登录态（无需 Cookie），在真实浏览器中点击签到按钮完成人机验证，纯本地运行。",
-  "minimum_chrome_version": "102",
+  "version": "1.1.0",
+  "description": "多账号、多站点自动签到。真实浏览器点击通过 Cloudflare，支持浏览器登录态、Cookie 多账号、服务器日历、推送与内置更新。",
+  "minimum_chrome_version": "103",
   "permissions": [
     "alarms",
     "storage",
@@ -27,7 +27,11 @@
     "https://api2.pushdeer.com/*",
     "https://api.pushdeer.com/*",
     "https://sctapi.ftqq.com/*",
-    "https://*.push.ft07.com/*"
+    "https://*.push.ft07.com/*",
+    "https://api.github.com/*",
+    "https://github.com/*",
+    "https://objects.githubusercontent.com/*",
+    "https://codeload.github.com/*"
   ],
   "background": {
     "service_worker": "background.js"

@@ -14,7 +14,7 @@
       <img src="icons/icon48.png" alt="" class="brand-logo">
       <div class="brand-text">
         <strong>GLaDOS 自动签到</strong>
-        <span id="brandVersion">v1.0.3</span>
+        <span id="brandVersion">v1.1.0</span>
       </div>
     </div>
 
@@ -58,6 +58,21 @@
   <main class="main">
 
     <div class="version-warn" id="versionWarn" hidden></div>
+
+    <!-- ---------- 更新条 ---------- -->
+    <div class="update-bar" id="updateBar">
+      <div class="update-main">
+        <span class="update-ver" id="updateCur">v—</span>
+        <span class="update-state" id="updateState">尚未检查更新</span>
+      </div>
+      <div class="update-actions">
+        <button class="btn btn-ghost btn-sm" id="btnCheckUpdate">检查更新</button>
+        <button class="btn btn-primary btn-sm" id="btnApplyUpdate" hidden>立即更新</button>
+        <button class="btn btn-primary btn-sm" id="btnReloadExt" hidden>重新加载扩展</button>
+        <button class="btn btn-ghost btn-sm" id="btnUpdateDir" title="重新选择扩展所在目录">选目录</button>
+      </div>
+      <div class="update-notes" id="updateNotes" hidden></div>
+    </div>
 
     <!-- ---------- 账号 ---------- -->
     <section class="panel is-active" id="panel-accounts">
@@ -195,7 +210,7 @@
           <label class="switch-row">
             <span>
               <strong>今日已签则跳过</strong>
-              <em>避免对同一账号重复发起签到</em>
+              <em>影响手动批量签到；自动任务无论如何每天只跑一次</em>
             </span>
             <input type="checkbox" id="skipIfDone" class="switch">
           </label>
@@ -214,10 +229,60 @@
         <div class="field field-switch">
           <label class="switch-row">
             <span>
+              <strong>测试签到显示签到窗口</strong>
+              <em>单账号测试时把签到页切到前台，能直接看到按钮点击过程</em>
+            </span>
+            <input type="checkbox" id="foregroundOnManual" class="switch">
+          </label>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
+              <strong>被验证拦截时切前台人工完成</strong>
+              <em>服务端返回 Cloudflare 失败后，把页面放到前台等你过验证，通过后自动重试一次</em>
+            </span>
+            <input type="checkbox" id="humanVerify" class="switch">
+          </label>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
+              <strong>验证未完成时保留标签页</strong>
+              <em>不自动关闭签到页，方便接着手动完成验证</em>
+            </span>
+            <input type="checkbox" id="keepTabOnVerify" class="switch">
+          </label>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
               <strong>自动点击 Cloudflare 验证框</strong>
               <em>实验性；使用 Chrome 调试接口，图片验证仍需手动完成</em>
             </span>
             <input type="checkbox" id="autoClickTurnstile" class="switch">
+          </label>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
+              <strong>打开设置页时检查更新</strong>
+              <em>只读取 GitHub Release 版本号，每 6 小时最多一次；关闭后完全不联网检查</em>
+            </span>
+            <input type="checkbox" id="updateCheckEnabled" class="switch">
+          </label>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
+              <strong>更新前备份旧文件</strong>
+              <em>写入前把将被覆盖的文件复制到扩展目录下的 _backup/v&lt;旧版本&gt;/</em>
+            </span>
+            <input type="checkbox" id="updateBackup" class="switch">
           </label>
         </div>
 
@@ -351,6 +416,7 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
+<script src="updater.js"></script>
 <script src="options.js"></script>
 </body>
 </html>

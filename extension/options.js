@@ -394,6 +394,11 @@ function renderSchedule() {
   $('skipIfDone').checked = s.skipIfDone !== false;
   $('notifyEnabled').checked = s.notifyEnabled !== false;
   $('autoClickTurnstile').checked = s.autoClickTurnstile === true;
+  $('foregroundOnManual').checked = s.foregroundOnManual !== false;
+  $('humanVerify').checked = s.humanVerify !== false;
+  $('keepTabOnVerify').checked = s.keepTabOnVerify !== false;
+  $('updateCheckEnabled').checked = s.updateCheckEnabled !== false;
+  $('updateBackup').checked = s.updateBackup !== false;
 }
 
 // ---------------------------------------------------------------- 渲染：推送
@@ -432,6 +437,158 @@ function renderLogs() {
       </div>
     `;
   }).join('');
+}
+
+// ---------------------------------------------------------------- 更新
+
+const UPDATE_STAMP_KEY = 'gcd_update_checked_at';
+const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+let pendingRelease = null;
+let updateBusy = false;
+
+function setUpdateBar(cls, stateText) {
+  const bar = $('updateBar');
+  bar.className = 'update-bar' + (cls ? ' ' + cls : '');
+  $('updateCur').textContent = 'v' + chrome.runtime.getManifest().version;
+  $('updateState').textContent = stateText;
+}
+
+function showUpdateNotes(text) {
+  const el = $('updateNotes');
+  if (!text) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+  el.hidden = false;
+  el.textContent = text;
+}
+
+/**
+ * 检查更新。
+ * @param {boolean} manual true 时忽略 6 小时节流，并给出明确反馈
+ */
+async function checkUpdate(manual) {
+  if (updateBusy) return;
+  if (!window.Updater) {
+    if (manual) toast('更新模块未加载，请重新加载扩展', true);
+    return;
+  }
+
+  updateBusy = true;
+  const btn = $('btnCheckUpdate');
+  const oldLabel = btn.textContent;
+  btn.disabled = true;
+  if (manual) btn.textContent = '检查中…';
+  if (manual) setUpdateBar('', '正在检查更新…');
+
+  try {
+    const r = await Updater.check();
+
+    if (r.error) {
+      setUpdateBar('is-error', `检查失败：${r.error}`);
+      showUpdateNotes('');
+      $('btnApplyUpdate').hidden = true;
+      if (manual) toast('检查更新失败：' + r.error, true);
+      return;
+    }
+
+    await chrome.storage.local.set({ [UPDATE_STAMP_KEY]: Date.now() });
+
+    if (r.hasUpdate) {
+      pendingRelease = r.release;
+      setUpdateBar('is-new', `发现新版本 v${r.latest}（当前 v${r.current}）`);
+      showUpdateNotes(
+        (r.release.name ? r.release.name + '\n' : '') +
+        (r.release.notes ? r.release.notes.slice(0, 1200) : '（该版本没有更新说明）')
+      );
+      $('btnApplyUpdate').hidden = false;
+      $('btnApplyUpdate').textContent = `更新到 v${r.latest}`;
+      $('btnReloadExt').hidden = true;
+    } else {
+      pendingRelease = null;
+      setUpdateBar('', `已是最新版本（v${r.current}）`);
+      showUpdateNotes('');
+      $('btnApplyUpdate').hidden = true;
+    }
+  } catch (e) {
+    setUpdateBar('is-error', `检查失败：${e.message}`);
+    if (manual) toast('检查更新失败：' + e.message, true);
+  } finally {
+    updateBusy = false;
+    btn.disabled = false;
+    btn.textContent = oldLabel;
+  }
+}
+
+async function applyUpdate() {
+  if (updateBusy || !pendingRelease) return;
+  if (!window.Updater) { toast('更新模块未加载', true); return; }
+  if (busy) { toast('正在签到，请等签到结束后再更新', true); return; }
+
+  const rel = pendingRelease;
+  const backup = $('updateBackup').checked;
+
+  const sure = confirm(
+    `将把扩展目录里的文件替换为 v${rel.version}。\n\n` +
+    '· 只覆盖安装包内的文件，不会删除你已有的其他文件\n' +
+    (backup ? '· 更新前会把旧文件备份到 _backup/ 下\n' : '· 未开启备份\n') +
+    '· 需要你手动授权一次扩展所在目录\n\n继续？'
+  );
+  if (!sure) return;
+
+  updateBusy = true;
+  const btn = $('btnApplyUpdate');
+  btn.disabled = true;
+  const oldLabel = btn.textContent;
+
+  try {
+    const r = await Updater.apply(rel, {
+      backup,
+      onProgress: (t) => {
+        btn.textContent = t;
+        $('updateState').textContent = t;
+      }
+    });
+
+    let msg = `已更新到 v${r.version}，写入 ${r.written} 个文件`;
+    if (r.backupFiles > 0) msg += `，备份 ${r.backupFiles} 个旧文件到 _backup/`;
+    if (r.backupFiles === -1) msg += '（备份失败，但文件已更新）';
+    setUpdateBar('is-new', msg + '。请重新加载扩展使其生效。');
+    showUpdateNotes('');
+    pendingRelease = null;
+    $('btnApplyUpdate').hidden = true;
+    $('btnReloadExt').hidden = false;
+    toast('更新完成，请重新加载扩展');
+  } catch (e) {
+    const m = String(e && e.message || e);
+    if (e && e.name === 'AbortError') {
+      setUpdateBar('', '已取消目录选择，未做任何修改');
+      return;
+    }
+    setUpdateBar('is-error', `更新失败：${m}`);
+    toast('更新失败：' + m, true);
+  } finally {
+    updateBusy = false;
+    btn.disabled = false;
+    btn.textContent = oldLabel;
+  }
+}
+
+/** 打开设置页时按节流自动检查一次。 */
+async function autoCheckUpdate() {
+  const s = STATE.settings || {};
+  if (s.updateCheckEnabled === false) return;
+  try {
+    const raw = await chrome.storage.local.get(UPDATE_STAMP_KEY);
+    const last = Number(raw[UPDATE_STAMP_KEY]) || 0;
+    if (Date.now() - last < UPDATE_INTERVAL_MS) {
+      setUpdateBar('', '已是最新检查（6 小时内不重复检查）');
+      return;
+    }
+  } catch (e) { /* 读不到就照常检查 */ }
+  checkUpdate(false).catch(() => { /* 静默失败 */ });
 }
 
 // ---------------------------------------------------------------- 加载/刷新
@@ -491,7 +648,9 @@ function openModal(accountId) {
 
   const sel = $('accSite');
   sel.innerHTML = (STATE.sites || [])
-    .map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.domain)}</option>`)
+    .map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.domain)}${
+      s.enabled === false ? '（已停用，不会自动签到）' : ''
+    }</option>`)
     .join('');
   if (acc && acc.siteId) sel.value = acc.siteId;
 
@@ -516,6 +675,14 @@ async function saveAccount() {
   const enabled = $('accEnabled').checked;
 
   if (!siteId) { toast('请先选择一个站点', true); return; }
+
+  // 站点被停用时账号永远不会被调度，保存前明确提示，避免"加了账号却从不签到"
+  const chosenSite = (STATE.sites || []).find((s) => s.id === siteId);
+  if (chosenSite && chosenSite.enabled === false) {
+    if (!confirm(`站点「${chosenSite.domain}」当前处于停用状态，保存后该账号不会被自动签到。仍要保存吗？`)) {
+      return;
+    }
+  }
 
   if (accMode === 'cookie') {
     if (!cookie) { toast('Cookie 模式必须填写 Cookie', true); return; }
@@ -616,7 +783,9 @@ async function probeLogin() {
     }
 
     lines.push('');
-    lines.push('该检测只验证浏览器登录态，不测试签到或 Turnstile。');
+    lines.push('该检测只验证「浏览器自己的登录态」，不读 Cookie、不测试签到或 Turnstile。');
+    lines.push('因此 COOKIE 模式的账号可能在此显示未登录 —— 那是正常的，');
+    lines.push('用账号卡上的「立即签到」才能验证 Cookie 是否有效。');
 
     showDiag(lines.join('\n'), '登录态检测');
   } finally {
@@ -918,6 +1087,29 @@ function bindEvents() {
     loadCalendar().catch((err) => toast(err.message, true));
   });
 
+  // 更新
+  $('btnCheckUpdate').addEventListener('click', () => {
+    checkUpdate(true).catch((e) => toast(e.message, true));
+  });
+  $('btnApplyUpdate').addEventListener('click', () => {
+    applyUpdate().catch((e) => toast(e.message, true));
+  });
+  $('btnReloadExt').addEventListener('click', () => {
+    // 文件已替换到磁盘，重载即可加载新代码；设置页会随之关闭
+    chrome.runtime.reload();
+  });
+  $('btnUpdateDir').addEventListener('click', async () => {
+    if (!window.Updater) { toast('更新模块未加载', true); return; }
+    try {
+      await Updater.forgetDir();
+      await Updater.ensureDir();
+      toast('已记录扩展目录，下次更新会直接写入');
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;   // 用户取消选择，不算错误
+      toast('选择目录失败：' + e.message, true);
+    }
+  });
+
   // 账号
   $('btnAddAccount').addEventListener('click', () => openModal(null));
 
@@ -1007,7 +1199,12 @@ function bindEvents() {
       maxStayMs: Math.max(2500, parseInt($('maxStay').value, 10) || 6500),
       skipIfDone: $('skipIfDone').checked,
       notifyEnabled: $('notifyEnabled').checked,
-      autoClickTurnstile: $('autoClickTurnstile').checked
+      autoClickTurnstile: $('autoClickTurnstile').checked,
+      foregroundOnManual: $('foregroundOnManual').checked,
+      humanVerify: $('humanVerify').checked,
+      keepTabOnVerify: $('keepTabOnVerify').checked,
+      updateCheckEnabled: $('updateCheckEnabled').checked,
+      updateBackup: $('updateBackup').checked
     };
     if (settings.maxStayMs < settings.minStayMs) {
       toast('停留上限不能小于下限', true);
@@ -1074,7 +1271,10 @@ function bindEvents() {
 (async function init() {
   try {
     bindEvents();
+    setUpdateBar('', '尚未检查更新');
     await reload();
+    // 更新检查放在首屏渲染之后，不阻塞界面
+    autoCheckUpdate().catch(() => {});
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       if (!changes.logs && !changes.accounts) return;
