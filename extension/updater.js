@@ -343,7 +343,12 @@
     const oldVersion = chrome.runtime.getManifest().version;
 
     progress('正在下载安装包…');
-    const resp = await fetch(release.zip.url, { cache: 'no-store' });
+    let resp;
+    try {
+      resp = await fetchWithTimeout(release.zip.url, { cache: 'no-store' }, 60000);
+    } catch (e) {
+      throw new Error(`下载安装包失败：${e.message}（GitHub 下载域名需已授权，请确认扩展为最新版）`);
+    }
     if (!resp.ok) throw new Error(`下载失败：HTTP ${resp.status}`);
     const buf = await resp.arrayBuffer();
 

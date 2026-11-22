@@ -16,7 +16,7 @@ const ALL_RESOURCE_TYPES = [
 const RULE_ID_BASE = 700000;
 const LOG_LIMIT = 300;
 
-const EXT_VERSION = '1.1.2';
+const EXT_VERSION = '1.1.3';
 
 
 const DEFAULT_SITES = [

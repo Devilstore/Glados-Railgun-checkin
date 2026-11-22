@@ -68,6 +68,7 @@ const sandbox = {
   Error,
   setTimeout,
   clearTimeout,
+  AbortController,
   confirm: () => true
 };
 

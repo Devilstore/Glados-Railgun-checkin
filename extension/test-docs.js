@@ -72,6 +72,9 @@ const usesGithub = /api\.github\.com/.test(updater);
 check('updater 访问 GitHub API 时 manifest 已授权',
   !usesGithub || hosts.some((h) => h.includes('api.github.com')),
   hosts.join(','));
+check('manifest 覆盖 GitHub Release 下载域名（含重定向的 githubusercontent CDN）',
+  hosts.some((h) => h.includes('githubusercontent.com')),
+  hosts.join(','));
 check('声明的最低 Chrome 版本为 103（deflate-raw 需要）',
   manifest.minimum_chrome_version === '103',
   String(manifest.minimum_chrome_version));
