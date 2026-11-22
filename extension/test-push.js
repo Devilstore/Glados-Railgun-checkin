@@ -1,9 +1,6 @@
 /**
- * test-push.js —— 校验推送正文与 Python 版 Report.render 完全一致
- * 运行：node test-push.js
- *
- * 基准值来自 checkin.py 的 Report.render("\n") / render("  \n")，
- * 由真实 Python 代码跑出来（见测试末尾的 EXPECTED 注释）。
+ * 校验推送正文与 Python 版 Report.render 逐字一致。
+ * 基准由真实 Python 代码生成，见 EXPECTED 常量。
  */
 'use strict';
 

@@ -5,9 +5,7 @@
 
 'use strict';
 
-// ============================================================================
-// 常量与默认配置
-// ============================================================================
+// ---- 常量与默认配置 ----
 
 const ALL_RESOURCE_TYPES = [
   'main_frame', 'sub_frame', 'stylesheet', 'script', 'image', 'font',
@@ -18,7 +16,7 @@ const ALL_RESOURCE_TYPES = [
 const RULE_ID_BASE = 700000;
 const LOG_LIMIT = 300;
 
-const EXT_VERSION = '1.1.0';
+const EXT_VERSION = '1.1.1';
 
 
 const DEFAULT_SITES = [
@@ -80,27 +78,20 @@ const DEFAULT_SETTINGS = {
   keepTabOnVerify: true,  // 人工验证未完成时保留签到标签页
   foregroundOnManual: true, // 单账号「测试签到」时把签到页切到前台
   updateCheckEnabled: true, // 打开设置页时检查 GitHub Release
-  updateBackup: true,     // 更新前把被覆盖的文件备份到 _backup/
   skipIfDone: true,       // 今日已签则跳过
   pushdeerKey: '',        // PushDeer SendKey
   serverchanKey: '',      // ServerChan SendKey
   minStayMs: 4500,        // 页面停留下限
-  maxStayMs: 6500,        // 页面停留上限
-  logRetention: LOG_LIMIT
+  maxStayMs: 6500         // 页面停留上限
 };
 
 const ALARM_TICK = 'gcd_tick';
 const ALARM_DELAY = 'gcd_random_delay';
 const DELAY_PLAN = 'gcd_delay_plan';
 
-// ============================================================================
-// Service Worker 保活
-// ============================================================================
-//
-// MV3 的 Service Worker 空闲约 30 秒会被回收。签到流程里有大量 await sleep()
-// （等页面加载、拟人停留、等点击响应），期间没有扩展 API 调用，容易被判定空闲，
-// 导致流程被腰斩——表现就是"结果有了但日志没写"。
-// 这里用一次轻量的扩展 API 调用周期性重置空闲计时器。
+// ---- Service Worker 保活 ----
+// MV3 SW 空闲约 30 秒会被回收，签到流程中大量 await sleep() 容易触发，
+// 期间周期性调用扩展 API 即可重置空闲计时。
 
 let keepAliveTimer = null;
 let keepAliveRefs = 0;
@@ -124,9 +115,7 @@ function releaseKeepAlive() {
 }
 
 
-// ============================================================================
-// 存储层
-// ============================================================================
+// ---- 存储层 ----
 
 /**
  * 补上缺少的内置站点，保留已有站点的启用状态。
@@ -188,9 +177,7 @@ async function pushLog(entry) {
   await chrome.storage.local.set({ logs: list });
 }
 
-// ============================================================================
-// 账号状态更新
-// ============================================================================
+// ---- 账号状态更新 ----
 
 function retryStatePatch(account, result) {
   const today = todayStr();
@@ -225,36 +212,22 @@ async function updateAccount(accountId, patch) {
   return accounts[idx];
 }
 
-// ============================================================================
-// 账号认证方式
-// ============================================================================
+// ---- 账号认证方式 ----
 
-/**
- * 解析账号的认证方式。
- *   'cookie'  —— 手动填写了 Cookie，走请求头注入（可多账号）
- *   'session' —— 不填 Cookie，直接用浏览器当前登录态（单账号/站点）
- */
+/** 有 Cookie 走请求头注入，否则复用浏览器登录态。 */
 function authModeOf(acc) {
   if (!acc) return 'session';
   if (!acc.cookie) return 'session';
   return 'cookie';
 }
 
-// ============================================================================
-// declarativeNetRequest：把指定账号的 Cookie / UA 注入到单个标签页
-// ============================================================================
+// ---- declarativeNetRequest：把指定账号的 Cookie / UA 注入到单个标签页 ----
 
-// rules 的 id 必须唯一。用「空闲 ID 分配」而不是「tabId 混算」：
-// 之前 id = BASE + (tabId%20000)*4 + seq 在两条规则之间可能撞号，
-// 撞号时 updateSessionRules 会把别人的规则删掉（保留标签页会同时存在多条规则）。
+// 规则 id 必须唯一：撞号时 updateSessionRules 会顺带删掉对方规则。
 const usedRuleIds = new Set();
 let ruleIdSyncPromise = null;
 
-/**
- * Service Worker 被回收后再启动时，内存中的 usedRuleIds 是空的，
- * 但上一轮创建的 session 规则仍然存在。不同步就会分配到已占用的 ID，
- * 随后 removeRuleIds 会把那条旧规则删掉。首次分配前先同步一次。
- */
+/** SW 重启后内存集合为空，首次分配前与现存 session 规则同步。 */
 function ensureRuleIdSync() {
   if (!ruleIdSyncPromise) {
     ruleIdSyncPromise = (async () => {
@@ -283,12 +256,9 @@ function releaseRuleId(ruleId) {
 }
 
 /**
- * 只为 cookie 模式建规则；session 模式返回 null（什么都不注入）。
- * 未填写 User-Agent 时不覆盖 UA，浏览器会发送真实 UA —— 这正是避免
- * 「设备不一致」的关键。
+ * 仅 cookie 模式建规则。未填 UA 时不覆盖，保持真实指纹（避免「设备不一致」）。
  */
 async function addTabScopedRule(tabId, account, site) {
-  // session 模式绝不动请求头（连 UA 也不改，保证指纹真实）
   if (!account.cookie) return null;
 
   const headers = [];
@@ -353,9 +323,7 @@ async function clearAllSessionRules() {
   } catch (e) { /* ignore */ }
 }
 
-// ============================================================================
-// 页面内执行体（在目标页面的 MAIN world 中运行，不能引用外部变量）
-// ============================================================================
+// ---- 页面内执行体（在目标页面的 MAIN world 中运行，不能引用外部变量） ----
 
 /**
  * 在页面主世界查找并点击签到按钮，然后等待官网自己发出的签到响应。
@@ -370,8 +338,7 @@ async function clickCheckinInPage() {
   }
 
   const btnText = (el) => ((el && (el.innerText || el.textContent)) || '').trim();
-  // disabled 只代表页面在 loading 或按钮暂不可用，不等于已签到。
-  // 只认官网的完成态 class；文案兜底由 DONE_TEXT 处理。
+  // disabled 只代表暂时不可用，不等于已签到；完成态只认 is-done。
   const isDone = (el) =>
     !!el && !!(el.classList && el.classList.contains('is-done'));
   const DONE_TEXT = /已签到|已簽到|\balready\b|\bchecked\b|\bsigned\b|明日|tomorrow/i;
@@ -406,8 +373,7 @@ async function clickCheckinInPage() {
     }
   }
 
-  // disabled 但文案不是完成态 = 页面还在 loading。
-  // 直接点它是无效动作，随后会白等 100 秒，所以先等它可用。
+  // 禁用态点击无效，随后会白等 100 秒，先等它可用。
   if (btn.disabled === true && !isDone(btn) && !DONE_TEXT.test(btnText(btn))) {
     for (let i = 0; i < 20; i++) {
       await sleep(500);
@@ -455,8 +421,7 @@ async function clickCheckinInPage() {
 
   // 等待官网自身请求返回（inject.js 旁听结果）
   let doneState = null;
-  // 官网 solveChallenge 在交互式 Turnstile 下最多等待 90 秒，
-  // 提交后还要处理响应；这里留足时间，避免提前关闭标签页中断请求。
+  // 交互式 Turnstile 最长等 90 秒 + 响应处理，留足时间避免中断请求。
   const MAX_WAIT = 100000;
   const GRACE_AFTER_DONE = 10000; // 按钮变完成态后再给 10 秒等响应
 
@@ -678,11 +643,7 @@ async function readTurnstileState(tabId) {
   }
 }
 
-/**
- * 人机验证事件记录器。
- * 自动点击是「悄悄发生」的动作——不记录的话用户完全不知道扩展动过鼠标。
- * 这里把所有 Turnstile 相关动作收集成文本片段，最终写进日志的 detail。
- */
+/** 收集 Turnstile 相关动作，写入日志 detail（自动点击必须留痕）。 */
 function tsNote(events, text) {
   if (!Array.isArray(events) || !text) return;
   events.push(text);
@@ -821,12 +782,8 @@ async function apiCheckinInPage() {
 }
 
 /**
- * 读取账号状态与积分（同源，Cookie 由 DNR 注入）。
- *
- * 除了基础字段，还从 /api/user/points 的 history 流水里解析出「哪些天签过到」：
- *   business 含 "checkin" 的记录 → 用 time（毫秒时间戳）折算成 YYYY-M-D
- * 这是官网日历面板用的同一份数据，也是判断"今天到底签没签"最可靠的依据，
- * 比看按钮文案、看 earned 字典都稳。
+ * 读取账号状态与积分（同源）。从 /api/user/points 的 history 流水解析
+ * 每日签到记录，这是判断「今天签没签」最可靠的依据。
  */
 async function fetchAccountSnapshotInPage() {
   const out = {};
@@ -859,7 +816,7 @@ async function fetchAccountSnapshotInPage() {
   out.loggedIn = !!(status && status.code === 0);
   out.statusCode = status && status.code;
 
-  // ---- 本地日期键（官网按本地时区分格，这里保持一致）----
+  // ---- 本地日期键（官网按本地时区分格，这里保持一致） ----
   const keyOf = (dt) => `${dt.getFullYear()}-${dt.getMonth() + 1}-${dt.getDate()}`;
   const localToday = keyOf(new Date());
 
@@ -878,7 +835,7 @@ async function fetchAccountSnapshotInPage() {
     out.checkinDays[keyOf(dt)] = parseInt(item.change, 10) || 0;
   });
 
-  // ---- earned 字典兜底（新站可能只给 earned）----
+  // ---- earned 字典兜底（新站可能只给 earned） ----
   const earned = pd.earned;
   if (earned && typeof earned === 'object' && !Array.isArray(earned)) {
     Object.keys(earned).forEach((k) => {
@@ -895,17 +852,11 @@ async function fetchAccountSnapshotInPage() {
   return out;
 }
 
-// ============================================================================
-// 结果归类
-// ============================================================================
+// ---- 结果归类 ----
 
 /**
- * 把服务端响应归类为统一结果。
- * @returns {{status:string, points:number, message:string, raw:object|null}}
- *   status: success | repeat | turnstile | device | fail
- *
- * 重要：拿不到服务端响应时**绝不能默认成功**。已签到的账号点按钮通常不会
- * 再发请求，此时只能用页面文案判断；判断不了就报失败，避免假成功。
+ * 归类服务端响应：success | repeat | turnstile | device | fail。
+ * 拿不到响应时绝不默认成功，判断不了就报失败。
  */
 function classifyResult(data, fallbackText) {
   const message = String((data && data.message) || fallbackText || '').trim();
@@ -944,8 +895,7 @@ function classifyResult(data, fallbackText) {
     data.points != null ? data.points : (data.earned != null && typeof data.earned !== 'object' ? data.earned : 0)
   ) || 0;
 
-  // 先处理明确的重复签到；注意 `observation logged` 既可能是重复，
-  // 也可能是新版正常签到的回执，不能仅凭这句话就判 repeat。
+  // `observation logged` 也可能是正常签到回执，不能仅凭它判 repeat。
   if (data.repeated === true || code === 1) {
     return { status: 'repeat', points: 0, message: message || '今日已签到', raw: data };
   }
@@ -972,9 +922,7 @@ function classifyResult(data, fallbackText) {
   return { status: 'fail', points: 0, message: message || `未预期响应 code=${code}`, raw: data };
 }
 
-// ============================================================================
-// 单账号签到
-// ============================================================================
+// ---- 单账号签到 ----
 
 /**
  * 本次运行中已确认的登录身份，用于防止多账号串号。
@@ -983,13 +931,8 @@ function classifyResult(data, fallbackText) {
 let identityGuard = new Map();
 
 /**
- * 等待标签页加载完成。
- *
- * 注意两种失败要区分开：
- *   1) 标签页被关闭 / 导航失败 → chrome.tabs.get 抛异常，属于致命错误
- *   2) 加载慢（Cloudflare 挑战、代理慢）→ status 长时间停在 loading
- * 对第 2 种，超时后再用 document.readyState 兜底判断——页面脚本可能已经能跑，
- * 只是 Chrome 还没把 status 置为 complete。
+ * 等待标签页加载完成。需区分「标签页已关闭」与「加载慢」：
+ * 后者超时后用 document.readyState 兜底，页面可跑就算可用。
  */
 async function waitTabComplete(tabId, timeoutMs) {
   const deadline = Date.now() + (timeoutMs || 20000);
@@ -1038,10 +981,8 @@ async function waitTabComplete(tabId, timeoutMs) {
  * 这一步在真正点击签到之前执行，失败即中止。
  */
 /**
- * 新站 7 个域名使用同一套前端/账号体系；railgun.info 是独立旧站。
- * 这是根据前端 bundle、challenge 接口和实际账号数据做的分组，
- * 不是官方提供的“账号库”字段，因此只对明确列出的域名生效；
- * 未知域名默认按独立账号域处理，避免误判。
+ * 新站各域名共用同一账号体系，railgun.info 是独立旧站。
+ * 仅对明确列出的域名生效，未知域名按独立账号域处理。
  */
 const GLADOS_SHARED_DOMAINS = new Set([
   'glados.cloud',
@@ -1105,9 +1046,7 @@ async function verifyIdentity(tabId, account, result, mode) {
     }
   }
 
-  // 与本次运行中其他账号比对。
-  // 7 个新站共用账号库，同一账号在不同域名下仍应去重；
-  // railgun.info 是旧站独立账号库，同一邮箱可以是另一个账号。
+  // 与本次运行中其他账号比对（按账号库分组，railgun 独立）。
   const realm = accountRealm(result.domain || account.siteId);
   const realmLabel = realm === 'railgun' ? 'railgun 旧站' : 'GLaDOS 新站';
   const identityKey = snap.userId != null
@@ -1136,14 +1075,8 @@ async function verifyIdentity(tabId, account, result, mode) {
 }
 
 /**
- * 打开一个后台标签页，挂上该账号的身份（cookie 模式才注入请求头），
- * 导航到指定路径并等加载完成。
- * @returns {{tabId:number|null, ruleId:number|null, ok:boolean}}
- */
-/**
  * 打开临时标签页并挂上账号身份。
- * @param {object} opts { foreground:boolean, timeoutMs:number }
- *   foreground=true 时把标签页切到前台并聚焦窗口（人工验证 / 调试需要）
+ * @param {object} opts { foreground 切到前台, timeoutMs 加载超时 }
  */
 async function openSessionTab(account, site, path, opts) {
   const options = opts || {};
@@ -1177,14 +1110,9 @@ async function openSessionTab(account, site, path, opts) {
 }
 
 /**
- * 保留的签到标签页登记表：tabId → { accountId, ruleId }
- *
- * 为什么需要：
- *   1) 需要人工验证时标签页会被保留，如果不登记，下一轮签到会再开一个，
- *      失败几次就堆一堆残留标签页；
- *   2) cookie 模式下这个标签页必须**继续保留 DNR 规则**，否则它会退化成
- *      浏览器自己的登录态 —— 用户在保留页里完成验证后，签到会落到别的账号上。
- * 因此：保留期间规则不动，标签页真正关闭时才清理规则。
+ * 保留的签到标签页：tabId → { accountId, ruleId }。
+ * 保留期间不移除 DNR 规则（否则会退化成浏览器登录态、可能签错账号），
+ * 标签页关闭时才清理。
  */
 const keptTabs = new Map();
 
@@ -1215,10 +1143,8 @@ if (chrome.tabs && chrome.tabs.onRemoved) {
 }
 
 /**
- * 关闭临时标签页。
- * @param {boolean} keepTab true 时保留标签页（人工验证未完成时用）；
- *   此时**不移除 DNR 规则**，让页面继续使用该账号身份，直到标签页被关闭。
- * @param {string} accountId 保留时用于登记，便于下一轮清理
+ * 关闭临时标签页。keepTab 为 true 时保留页面与 DNR 规则（人工验证未完成），
+ * 并登记到 keptTabs 以便下一轮清理。
  */
 async function closeSessionTab(tabId, ruleId, keepTab, accountId) {
   if (keepTab) {
@@ -1306,21 +1232,10 @@ async function getCalendar(account, site, days) {
     await closeSessionTab(tabId, ruleId);
   }
 }
+/** 单账号签到。opts: { force 忽略本地已签记录, reclick 强制点击 } */
 /**
- * 对一个账号执行签到。
- * @param {object} account
- * @param {object} site
- * @param {object} settings
- * @param {string} trigger  manual | auto
- * @param {object} opts     { force, reclick }
- *   force   —— 不因"本地记录今日已签"而跳过
- *   reclick —— 调试用：即使服务端已有今日记录也真实点击（正常立即签到不传）
- */
-/**
- * 执行积分兑换。
- * 请求格式与 Python 版（checkin.py 的 API.exchange）保持一致：
- *   POST /api/user/exchange，body 为 application/x-www-form-urlencoded，字段 planType
- * 之前这里发的是 JSON，与已知可用的 Python 实现不同，可能导致兑换静默失败。
+ * 执行积分兑换。请求格式对齐 Python 版：POST /api/user/exchange，
+ * body 为 form-urlencoded，字段 planType。
  */
 async function exchangeInPage(plan) {
   try {
@@ -1353,8 +1268,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
   const mode = authModeOf(account);
   let tabId = null;
   let ruleId = null;
-  // 人机验证事件收集器：自动点击、切前台、静默通过都记进 detail。
-  // 放在函数作用域，保证任何提前 return 的分支也能被记录。
+  // 人机验证事件收集器；放在函数作用域，提前 return 也能被记录。
   const tsEvents = [];
 
   const result = {
@@ -1403,14 +1317,11 @@ async function checkinOne(account, site, settings, trigger, opts) {
 
     await sleep(600);
 
-    // 4. 身份校验：确认当前会话属于本账号，否则中止（防止签错账号）
-    //    同时拿到服务端日历快照（history 流水 → 哪些天签过）
+    // 4. 身份校验（防签错账号），同时取服务端日历快照
     const identified = await verifyIdentity(tabId, account, result, mode);
     if (!identified) return result;
 
-    // 5. 服务端前哨检查：今天已经签过就不必点按钮了
-    //    依据是 /api/user/points 的 history 流水（官网日历用同一份数据）
-    //    reclick 仅保留给调试调用；正常「立即签到」不强行重复点击。
+    // 5. 前哨检查：服务端已有今日记录就不再点按钮
     if (result.servedAlready) {
       const pts = result.servedTodayPoints;
       if (!options.reclick) {
@@ -1426,7 +1337,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
     }
 
     if (site.mode === 'api') {
-      // ---------- API 模式：无需渲染，直接提交 ----------
+      // ---- API 模式：无需渲染，直接提交 ----
       const apiRes = await chrome.scripting.executeScript({
         target: { tabId },
         world: 'MAIN',
@@ -1444,7 +1355,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
         message: cls.message
       });
     } else {
-      // ---------- 浏览器模式：注入钩子 → 拟人停留 → 点击按钮 ----------
+      // ---- 浏览器模式：注入钩子 → 拟人停留 → 点击按钮 ----
       try {
         await chrome.scripting.executeScript({
           target: { tabId },
@@ -1502,8 +1413,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
         return result;
       }
       if (r.reason === 'no-response') {
-        // 按钮点了但没抓到签到请求。已签到的账号通常不会再发请求，属于正常情况。
-        // 判定优先级：服务端日历记录 > 按钮文案 > 报失败（绝不假成功）
+        // 点了但没抓到请求（已签账号常见）。判定优先级：服务端记录 > 按钮文案 > 报失败
         let snapTodayPoints = null;
         try {
           const s = await chrome.scripting.executeScript({
@@ -1557,9 +1467,8 @@ async function checkinOne(account, site, settings, trigger, opts) {
         result.detail = `诊断：点击后约 ${r.waitedMs || '?'} ms 收到服务端响应`;
       }
 
-      // ---------- Cloudflare 被拒后的补救：切前台 + 等人工验证 + 重试一次 ----------
-      // 后台标签页里交互式 Turnstile 拿不到令牌，服务端会回 code=5。
-      // 这时把标签页放到前台，等用户手动过验证，拿到令牌后自动再点一次。
+      // ---- Cloudflare 被拒后的补救：切前台 + 等人工验证 + 重试一次 ----
+      // 后台页拿不到 Turnstile 令牌会回 code=5：切前台等人工验证后自动重试。
       if (result.status === 'turnstile' && settings.humanVerify !== false) {
         await focusTab(tabId);
         notifyTurnstile();
@@ -1629,8 +1538,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
       }
     }
 
-    // 6. 复读账号快照（仍在同一标签页、规则仍生效）
-    //    签到成功后积分入库可能有延迟，稍等再读
+    // 6. 复读快照（积分入库有延迟）
     await sleep(900);
     try {
       const snapRes = await chrome.scripting.executeScript({
@@ -1683,8 +1591,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
         '签到页已保留在前台，完成验证后可回来点「测试签到」';
     }
 
-    // 先写日志、再更新账号：日志是最重要的排查依据，任何一步失败都不能
-    // 让整条记录丢失
+    // 先写日志再更新账号：日志是首要排查依据，不能被后续失败吞掉
     const okStatus = result.status === 'success' || result.status === 'repeat';
 
     try {
@@ -1707,9 +1614,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
     }
 
     try {
-      // 身份校验失败时不覆盖已有快照，避免把错误账号的信息写进去
-      // 只有拿到有效身份信息时才覆盖快照；页面加载失败/未执行身份校验时
-      // result.email 为 null，不能把已有账号快照清空。
+      // 无有效身份信息时保留旧快照，避免清空或用错账号覆盖。
       const snapshotPatch = (result.identityFailed || !result.email)
         ? (account.snapshot || null)
         : {
@@ -1761,9 +1666,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
   }
 }
 
-// ============================================================================
-// 登录态探测（不依赖 cookie 读取）
-// ============================================================================
+// ---- 登录态探测（不依赖 cookie 读取） ----
 
 /**
  * 打开一个后台标签页，用浏览器自身的登录态请求 /api/user/status。
@@ -1846,9 +1749,7 @@ async function probeBrowserLogin(domain) {
   }
 }
 
-// ============================================================================
-// 通知
-// ============================================================================
+// ---- 通知 ----
 
 const STATUS_TEXT = {
   success: '签到成功',
@@ -1859,15 +1760,9 @@ const STATUS_TEXT = {
 };
 
 /**
- * 推送一条消息到所有已配置的后端。
- *
- * 换行处理必须按后端区分，这与 Python 版的行为一致：
- *   - PushDeer：Python 用的是 pypushdeer 的 send_text()，即 type=text（纯文本），
- *     单 \n 就换行。之前这里传了 type=markdown，Markdown 渲染器会把单 \n
- *     当作软换行合并成一行，导致推送内容挤成一段。
- *   - Server酱：按 Markdown 渲染，单 \n 不换行，必须行尾两空格 + \n 做硬换行。
- *
- * @param {string[]|string} content 推荐传行数组；传字符串时按 \n 拆分
+ * 推送消息（换行方式按后端区分）：PushDeer 用 type=text，单 \n 即换行；
+ * Server酱 按 Markdown 渲染，需行尾两空格 + \n 硬换行。
+ * @param {string[]|string} content 推荐传行数组
  */
 async function sendPushNotification(settings, title, content) {
   const lines = Array.isArray(content)
@@ -2008,9 +1903,7 @@ async function notifySummary(results, settings, skipped) {
   } catch (e) { /* 通知失败不影响主流程 */ }
 }
 
-// ============================================================================
-// 批量签到
-// ============================================================================
+// ---- 批量签到 ----
 
 let running = false;
 
@@ -2046,9 +1939,7 @@ async function runAll(options) {
 
       const sameDay = acc.last && acc.last.date === today;
       const done = sameDay && (acc.last.status === 'success' || acc.last.status === 'repeat');
-      // 自动任务每天只跑一次：成功后不再回头重复签。
-      // 否则把「今日已签则跳过」关掉时，tick 每 15 分钟都会把所有账号重签一遍。
-      // 手动「立即签到」传 force，仍可强制重跑。
+      // 自动任务每天只跑一次（与 skipIfDone 无关），手动 force 可强制重跑。
       if (done && (settings.skipIfDone || isAuto) && !opts.force) continue;
 
       // 自动任务遵守每日重试上限和退避；手动“立即签到”不受限制。
@@ -2092,8 +1983,7 @@ async function runAll(options) {
       // 每个账号之间加一点间隔，降低集中请求特征
       if (results.length > 0) await sleep(1500 + Math.random() * 2500);
       try {
-        // 批量运行一律后台执行：否则每个账号都会把窗口抢到前台。
-        // 只有单账号「立即签到」才按设置决定是否前台展示。
+        // 批量一律后台执行，避免每个账号都抢窗口
         const r = await checkinOne(t.acc, t.site, settings, opts.trigger || 'auto',
           { force: !!opts.force, suppressNotify: true, foreground: false });
         results.push(r);
@@ -2129,9 +2019,7 @@ async function runAll(options) {
   }
 }
 
-// ============================================================================
-// 调度
-// ============================================================================
+// ---- 调度 ----
 
 async function ensureAlarms() {
   const existing = await chrome.alarms.get(ALARM_TICK);
@@ -2180,8 +2068,7 @@ async function tick() {
       if (a.last.retryExhausted) return false;
       if (a.last.nextRetryAt && a.last.nextRetryAt > Date.now()) return false;
     }
-    // tick 只负责自动调度：已签成功就结束，不看 skipIfDone，
-    // 否则关掉该开关会让自动任务每 15 分钟重跑一轮。
+    // 已签成功即结束；不看 skipIfDone，否则会每 15 分钟重跑
     return !done;
   });
 
@@ -2257,9 +2144,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
-// ============================================================================
-// 生命周期
-// ============================================================================
+// ---- 生命周期 ----
 
 chrome.runtime.onInstalled.addListener((details) => {
   (async () => {
@@ -2292,9 +2177,7 @@ chrome.runtime.onStartup.addListener(() => {
   })().catch((e) => console.error('[onStartup]', e));
 });
 
-// ============================================================================
-// 消息路由（popup / options 调用）
-// ============================================================================
+// ---- 消息路由（popup / options 调用） ----
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
@@ -2319,8 +2202,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             );
           }
           await saveState(allowed);
-          // 账号、站点或调度设置变化后，旧的随机计划可能已经过期。
-          // 清除后由下一次 tick（最多 15 分钟）重新按新设置安排。
+          // 设置变更后清掉过期计划，由下一次 tick 重新安排
           if (patch.accounts || patch.sites || patch.settings) {
             await chrome.alarms.clear(ALARM_DELAY);
             await chrome.storage.local.remove(DELAY_PLAN);
@@ -2348,8 +2230,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               sendResponse({ ok: false, error: '账号或站点不存在' });
               break;
             }
-            // 直接签到：服务端已有今日记录时返回“已签到”，不再强行重复点击。
-            // 单账号测试默认把签到页切到前台，方便观察点击与完成人机验证。
+            // 单账号测试默认切到前台，便于观察点击与完成验证
             const r = await checkinOne(acc, site, settings, 'manual',
               { force: true, foreground: msg.foreground !== false });
             sendResponse({ ok: true, result: r });

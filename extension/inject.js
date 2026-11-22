@@ -1,13 +1,9 @@
 /**
  * inject.js —— 在页面主世界（MAIN world）执行
  *
- * 作用只有两个：
- *   1) 让 Cloudflare Turnstile 认为标签页处于前台可见状态
- *      （后台标签页会被判定为挂机/隐藏页，导致 interaction-only 模式不下发 token）
- *   2) 旁听官网自己发出的 /api/user/checkin 响应，供后台读取结果
- *
- * 注意：本脚本不构造、不伪造、不重放任何签到请求。
- * 签到动作由页面自身的按钮点击触发，人机验证由 Cloudflare 官方组件完成。
+ * 两件事：让后台标签页保持可见状态（否则 Turnstile 不下发 token），
+ * 以及旁听官网自己发出的 /api/user/checkin 响应。
+ * 本脚本不构造、不伪造、不重放任何签到请求。
  */
 (function () {
   'use strict';
@@ -18,7 +14,7 @@
   window.__gcdResults = [];
   window.__gcdLast = null;
 
-  // ---------- 1. 可见性伪装 ----------
+  // ---- 1. 保持页面可见 ----
   try {
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
@@ -56,7 +52,7 @@
     } catch (e) { /* ignore */ }
   }
 
-  // ---------- 2. 旁听 XMLHttpRequest（官网 axios 底层走 XHR） ----------
+  // ---- 2. 旁听 XHR（官网 axios 底层走 XHR） ----
   try {
     var rawOpen = XMLHttpRequest.prototype.open;
     var rawSend = XMLHttpRequest.prototype.send;
@@ -86,7 +82,7 @@
     };
   } catch (e) { /* ignore */ }
 
-  // ---------- 3. 旁听 fetch（官网若改用 fetch 的兜底） ----------
+  // ---- 3. 旁听 fetch（兜底） ----
   try {
     var rawFetch = window.fetch;
     if (typeof rawFetch === 'function') {

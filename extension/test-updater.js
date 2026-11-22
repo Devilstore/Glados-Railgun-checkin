@@ -1,10 +1,5 @@
 /**
- * test-updater.js —— 校验版本比较、zip 解压与路径安全
- * 运行：node test-updater.js
- *
- * 为什么重要：
- *   updater 会把下载的 zip 直接写进扩展目录。一旦路径处理有漏洞
- *   （目录穿越）或解压算错，扩展就会被写坏。所以这几条必须锁死。
+ * 校验版本比较、zip 解压与路径安全（写盘前必须挡住目录穿越）。
  */
 'use strict';
 
@@ -85,7 +80,7 @@ if (!U) {
   process.exit(1);
 }
 
-// ---------------------------------------------------------------- 造一个真实 zip
+// ---- 造一个真实 zip ----
 function buildZip(entries) {
   const locals = [];
   const centrals = [];
@@ -158,7 +153,7 @@ function check(name, cond, extra) {
   rows.push(`${cond ? '[OK  ]' : '[FAIL]'} ${name}${cond ? '' : '  → ' + (extra || '')}`);
 }
 
-// ---------------------------------------------------------------- 内存文件系统
+// ---- 内存文件系统 ----
 // 用来验证 apply() 真的把内容写对位置，而不只是"没抛异常"。
 function makeDir(name) {
   return {
@@ -237,7 +232,7 @@ async function putFile(dir, p, content) {
 }
 
 (async () => {
-  // ---------- 1. 版本比较 ----------
+  // ---- 1. 版本比较 ----
   check('1.1.0 > 1.0.7', U.compareVer('1.1.0', '1.0.7') === 1);
   check('1.0.7 == v1.0.7', U.compareVer('v1.0.7', '1.0.7') === 0);
   check('1.10.0 > 1.9.9（按段比较而非字典序）', U.compareVer('1.10.0', '1.9.9') === 1);
@@ -245,7 +240,7 @@ async function putFile(dir, p, content) {
   check('1.0.6 < 1.0.7', U.compareVer('1.0.6', '1.0.7') === -1);
   check('非法版本号返回 null', U.parseVer('abc') === null);
 
-  // ---------- 2. 解压 ----------
+  // ---- 2. 解压 ----
   const manifest = JSON.stringify({ manifest_version: 3, version: '1.1.0', name: 't' });
   const zipBuf = buildZip([
     { name: 'manifest.json', data: manifest, method: 8 },   // deflate
@@ -262,7 +257,7 @@ async function putFile(dir, p, content) {
   check('store 条目内容正确', byPath.get('icons/icon16.png') === 'PNGDATA');
   check('嵌套路径保持原样', byPath.has('icons/icon16.png'));
 
-  // ---------- 3. 顶层目录剥离 ----------
+  // ---- 3. 顶层目录剥离 ----
   const nested = U.normalizeFiles([
     { path: 'extension/manifest.json', data: new Uint8Array([1]) },
     { path: 'extension/background.js', data: new Uint8Array([2]) }
@@ -278,7 +273,7 @@ async function putFile(dir, p, content) {
   check('已有根 manifest.json 时不剥离',
     notNested.some((f) => f.path === 'extension/background.js'));
 
-  // ---------- 4. 路径安全 ----------
+  // ---- 4. 路径安全 ----
   const evil = U.normalizeFiles([
     { path: '../evil.js', data: new Uint8Array([1]) },
     { path: '/etc/passwd', data: new Uint8Array([1]) },
@@ -301,7 +296,7 @@ async function putFile(dir, p, content) {
   check('反斜杠路径被规范为正斜杠',
     backslash.length === 1 && backslash[0].path === 'icons/icon16.png');
 
-  // ---------- 5. 端到端：用内存文件系统模拟写盘 ----------
+  // ---- 5. 端到端：用内存文件系统模拟写盘 ----
   const root = makeDir('extension');
   await putFile(root, 'background.js', 'OLD-CODE');
   await putFile(root, 'manifest.json', JSON.stringify({ version: '1.0.7' }));

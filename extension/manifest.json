@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GLaDOS 自动签到",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "多账号、多站点自动签到。真实浏览器点击通过 Cloudflare，支持浏览器登录态、Cookie 多账号、服务器日历、推送与内置更新。",
   "minimum_chrome_version": "103",
   "permissions": [

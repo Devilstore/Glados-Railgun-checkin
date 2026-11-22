@@ -1,12 +1,5 @@
 /**
- * test-rules.js —— 校验 DNR 规则 ID 分配与保留标签页的生命周期
- * 运行：node test-rules.js
- *
- * 覆盖两个曾经存在的隐患：
- *   1) 旧算法 id = BASE + (tabId%20000)*4 + seq 会撞号，撞号时
- *      updateSessionRules 会把另一个标签页的规则删掉（该标签页身份丢失）。
- *   2) 保留标签页时若移除 DNR 规则，cookie 模式的页面会退化成浏览器
- *      自己的登录态，验证完成后可能签到到别的账号上。
+ * 校验 DNR 规则 ID 分配与保留标签页的生命周期。
  */
 'use strict';
 

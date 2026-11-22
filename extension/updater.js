@@ -1,20 +1,6 @@
 /**
- * updater.js —— 检查 GitHub Release 并就地更新本地（未打包）扩展目录
- *
- * 为什么不能"直接覆盖"：
- *   Chrome 扩展对自己的安装目录没有写权限（chrome-extension:// 是只读的）。
- *   唯一可行方式是 File System Access API：用户手动授权一次目录句柄，
- *   之后扩展就能把新文件写进去。目录句柄可存入 IndexedDB 复用。
- *
- * 因此完整流程是：
- *   1) 请求 GitHub Releases API，比较版本号；
- *   2) 用户点「更新」→ 复用已授权目录，或弹出目录选择器让用户选 extension 目录；
- *   3) 下载 release zip，在内存里解压（DecompressionStream，无第三方库）；
- *   4) 校验路径安全 + 校验 manifest.json 的版本，必要时先备份旧文件；
- *   5) 逐文件写入，覆盖同名文件；
- *   6) 提示用户重新加载扩展（或调用 chrome.runtime.reload()）。
- *
- * 本文件不做任何自动后台轮询：只在设置页打开时按需检查，避免无谓的外部请求。
+ * updater.js —— 检查 GitHub Release 并就地更新本地（未打包）扩展目录。
+ * 扩展无法写自己的安装目录，只能由用户授权一次目录句柄（存 IndexedDB 复用）。
  */
 
 'use strict';
@@ -30,8 +16,7 @@
   const BACKUP_DIR = '_backup';
   const SKIP_PATHS = new Set(['_backup']);
 
-  // ---------------------------------------------------------------- 小工具
-
+  // ---- 小工具 ----
   function parseVer(v) {
     const m = String(v == null ? '' : v).trim().replace(/^v/i, '')
       .match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
@@ -51,8 +36,7 @@
     return 0;
   }
 
-  // ---------------------------------------------------------------- IndexedDB：存目录句柄
-
+  // ---- IndexedDB：存目录句柄 ----
   function openDb() {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(IDB_NAME, 1);
@@ -93,23 +77,45 @@
     }
   }
 
-  // ---------------------------------------------------------------- 版本检查
+  // ---- 版本检查 ----
+  /** 带超时的 fetch；避免 GitHub 挂起时 UI 一直停在「正在检查…」。 */
+  async function fetchWithTimeout(url, opts, timeoutMs) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs || 15000);
+    try {
+      return await fetch(url, Object.assign({ signal: ctrl.signal }, opts || {}));
+    } catch (e) {
+      if (e && e.name === 'AbortError') {
+        throw new Error(`请求超时（${Math.round((timeoutMs || 15000) / 1000)} 秒未响应）`);
+      }
+      throw new Error(`网络请求失败：${e.message || e}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   /**
    * 拉取最新正式 Release。
    * @returns {{version:string,name:string,notes:string,htmlUrl:string,publishedAt:string,zip:object|null}}
    */
   async function fetchLatest() {
-    const resp = await fetch(API_LATEST, {
+    const resp = await fetchWithTimeout(API_LATEST, {
       headers: { accept: 'application/vnd.github+json' },
       cache: 'no-store'
-    });
+    }, 15000);
     if (resp.status === 404) throw new Error('仓库还没有正式 Release');
     if (resp.status === 403) throw new Error('GitHub API 限流，请稍后再试');
     if (!resp.ok) throw new Error(`GitHub API 返回 ${resp.status}`);
 
-    const data = await resp.json();
+    let data = null;
+    try {
+      data = await resp.json();
+    } catch (e) {
+      throw new Error('GitHub 返回的不是有效 JSON');
+    }
     const version = String(data.tag_name || '').replace(/^v/i, '');
+    if (!version) throw new Error('Release 里没有 tag_name');
+
     const assets = (data.assets || []).map((a) => ({
       name: a.name,
       url: a.browser_download_url,
@@ -145,8 +151,7 @@
     }
   }
 
-  // ---------------------------------------------------------------- 目录授权
-
+  // ---- 目录授权 ----
   async function pickDir() {
     if (typeof window.showDirectoryPicker !== 'function') {
       throw new Error('当前浏览器不支持目录选择（需要 Chrome/Edge 103+）');
@@ -190,8 +195,7 @@
     try { await idbSet(DIR_KEY, null); } catch (e) { /* ignore */ }
   }
 
-  // ---------------------------------------------------------------- ZIP 解压
-
+  // ---- ZIP 解压 ----
   async function inflateRaw(raw) {
     if (typeof DecompressionStream !== 'function') {
       throw new Error('当前浏览器不支持解压 API（需要 Chrome/Edge 103+）');
@@ -202,8 +206,7 @@
   }
 
   /**
-   * 解析 zip，返回 [{ path, data:Uint8Array }]。只支持 store(0) / deflate(8)。
-   * 不用第三方库：读取中央目录 → 逐个定位本地头 → 解压数据段。
+   * 解析 zip 为 [{ path, data }]。仅支持 store(0) / deflate(8)，不引入第三方库。
    */
   async function unzip(buffer) {
     const u8 = new Uint8Array(buffer);
@@ -257,10 +260,8 @@
   }
 
   /**
-   * 规范化文件列表：
-   *   - 拒绝绝对路径 / 上跳路径 / 反斜杠路径（防目录穿越）
-   *   - 若所有文件都在同一个顶层目录下（且顶层没有 manifest.json），去掉该前缀
-   *   - 跳过备份目录
+   * 规范化文件列表：拒绝目录穿越与绝对路径，跳过 _backup，
+   * 并在"剥离顶层目录后才能得到根 manifest.json"时剥离该前缀。
    */
   function normalizeFiles(files) {
     const safe = [];
@@ -275,10 +276,6 @@
       safe.push({ path: parts.join('/'), parts, data: f.data });
     }
 
-    // 是否需要剥离顶层目录：
-    // 只有在"剥离后能得到根 manifest.json"时才剥离。
-    // 这样 `extension/manifest.json` 这类打包方式能正确处理，
-    // 而只有 `icons/*.png` 的片段不会被误剥（那会写错位置）。
     const hasRootManifest = safe.some((f) => f.path === 'manifest.json');
     if (!hasRootManifest && safe.length) {
       const first = safe[0].parts[0];
@@ -295,8 +292,7 @@
     return safe;
   }
 
-  // ---------------------------------------------------------------- 写入
-
+  // ---- 写入 ----
   async function readExisting(dir, parts) {
     let node = dir;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -335,8 +331,7 @@
 
   /**
    * 执行更新。
-   * @param {object} release   check() 返回的 release
-   * @param {object} opts      { backup:boolean, onProgress:(text)=>void }
+   * @param {object} opts { backup 是否备份, onProgress(text) 进度回调 }
    * @returns {{version:string, written:number, backupFiles:number}}
    */
   async function apply(release, opts) {
@@ -359,7 +354,7 @@
     const man = files.find((f) => f.path === 'manifest.json');
     if (!man) throw new Error('压缩包里没有 manifest.json，可能不是扩展包');
 
-    // 校验包内 manifest 的版本，避免版本号与 tag 不一致时写入错误内容
+    // 包内版本必须等于 Release 版本，且比当前版本新
     let pkgVersion = '';
     try {
       pkgVersion = String(JSON.parse(new TextDecoder('utf-8').decode(man.data)).version || '');
@@ -378,8 +373,7 @@
       try {
         backupFiles = await backupExisting(dir, files, oldVersion);
       } catch (e) {
-        // 备份失败不阻断更新，但要让用户知道
-        backupFiles = -1;
+        backupFiles = -1;   // 备份失败不阻断更新
       }
     }
 
@@ -393,13 +387,13 @@
     return { version: pkgVersion, written, backupFiles };
   }
 
-  // ---------------------------------------------------------------- 导出
-
+  // ---- 导出 ----
   window.Updater = {
     REPO,
     parseVer,
     compareVer,
     fetchLatest,
+    fetchWithTimeout,
     check,
     apply,
     ensureDir,

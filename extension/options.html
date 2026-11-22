@@ -14,7 +14,7 @@
       <img src="icons/icon48.png" alt="" class="brand-logo">
       <div class="brand-text">
         <strong>GLaDOS 自动签到</strong>
-        <span id="brandVersion">v1.1.0</span>
+        <span id="brandVersion">v1.1.1</span>
       </div>
     </div>
 
@@ -59,20 +59,17 @@
 
     <div class="version-warn" id="versionWarn" hidden></div>
 
-    <!-- ---------- 更新条 ---------- -->
-    <div class="update-bar" id="updateBar">
-      <div class="update-main">
-        <span class="update-ver" id="updateCur">v—</span>
-        <span class="update-state" id="updateState">尚未检查更新</span>
-      </div>
-      <div class="update-actions">
+    <!-- ---------- 更新提示（单行，默认只有一条状态 + 一个按钮） ---------- -->
+    <div class="update-line" id="updateBar">
+      <span class="update-state" id="updateState">尚未检查更新</span>
+      <button class="link-btn" id="btnToggleNotes" hidden>更新说明</button>
+      <span class="update-actions">
         <button class="btn btn-ghost btn-sm" id="btnCheckUpdate">检查更新</button>
-        <button class="btn btn-primary btn-sm" id="btnApplyUpdate" hidden>立即更新</button>
-        <button class="btn btn-primary btn-sm" id="btnReloadExt" hidden>重新加载扩展</button>
-        <button class="btn btn-ghost btn-sm" id="btnUpdateDir" title="重新选择扩展所在目录">选目录</button>
-      </div>
-      <div class="update-notes" id="updateNotes" hidden></div>
+        <button class="btn btn-primary btn-sm" id="btnApplyUpdate" hidden>更新</button>
+        <button class="btn btn-primary btn-sm" id="btnReloadExt" hidden>重新加载</button>
+      </span>
     </div>
+    <div class="update-notes" id="updateNotes" hidden></div>
 
     <!-- ---------- 账号 ---------- -->
     <section class="panel is-active" id="panel-accounts">
@@ -270,19 +267,9 @@
           <label class="switch-row">
             <span>
               <strong>打开设置页时检查更新</strong>
-              <em>只读取 GitHub Release 版本号，每 6 小时最多一次；关闭后完全不联网检查</em>
+              <em>只读 GitHub 版本号，每 6 小时最多一次；关闭后完全不联网检查</em>
             </span>
             <input type="checkbox" id="updateCheckEnabled" class="switch">
-          </label>
-        </div>
-
-        <div class="field field-switch">
-          <label class="switch-row">
-            <span>
-              <strong>更新前备份旧文件</strong>
-              <em>写入前把将被覆盖的文件复制到扩展目录下的 _backup/v&lt;旧版本&gt;/</em>
-            </span>
-            <input type="checkbox" id="updateBackup" class="switch">
           </label>
         </div>
 

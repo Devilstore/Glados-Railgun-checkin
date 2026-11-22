@@ -63,18 +63,19 @@ railgun.info
 
 ### 设置
 
-| 设置 | 说明 |
-|---|---|
-| 签到时段 | 目标小时内随机触发 |
-| 随机延迟 | 目标小时内最多等待的分钟数 |
-| 页面停留 | 拟人停留，最低 2.5 秒 |
-| 今日已签则跳过 | 避免重复签到 |
-| 桌面通知 | 全部任务完成后汇总通知 |
-| 测试签到显示签到窗口 | 单账号测试时把签到页切到前台，能看到按钮点击过程 |
-| 被验证拦截时切前台人工完成 | 服务端返回 Cloudflare 失败后置顶页面等待人工验证，通过后自动重试一次 |
-| 验证未完成时保留标签页 | 不自动关闭签到页，方便接着手动完成验证 |
-| 自动点击验证框 | 实验性；默认关闭；用 debugger 点击 Cloudflare iframe 复选框，图片题仍需手动 |
-| 远程推送 | PushDeer / ServerChan |
+| 设置 | 默认 | 说明 |
+|---|---|---|
+| 签到时段 | 9 点 | 目标小时内随机触发 |
+| 随机延迟 | 45 分钟 | 目标小时内最多等待的分钟数 |
+| 页面停留 | 4.5–6.5 秒 | 拟人停留，最低 2.5 秒 |
+| 今日已签则跳过 | 开 | 影响手动批量签到；自动任务无论此开关如何，每天只跑一次 |
+| 桌面通知 | 开 | 全部任务完成后汇总通知 |
+| 测试签到显示签到窗口 | 开 | 单账号测试时把签到页切到前台，能看到按钮点击过程 |
+| 被验证拦截时切前台人工完成 | 开 | 服务端返回 Cloudflare 失败后置顶页面等待人工验证，通过后自动重试一次 |
+| 验证未完成时保留标签页 | 开 | 不自动关闭签到页，方便接着手动完成验证 |
+| 自动点击 Cloudflare 验证框 | 关 | 实验性；用 debugger 点击 Cloudflare iframe 复选框，图片题仍需手动 |
+| 打开设置页时检查更新 | 开 | 只读 GitHub Release 版本号，1 小时内最多一次；关闭后完全不联网检查 |
+| 远程推送 | 空 | PushDeer / ServerChan |
 
 > 自动点击需要 `debugger` 权限。Chrome 不允许把 `debugger` 作为可选权限，因此即使关闭自动点击，安装时也会看到调试权限提示；开启后 Chrome 可能在点击瞬间显示“扩展正在调试此浏览器”，失败会自动转为置顶页面并等待人工完成。
 
@@ -128,7 +129,7 @@ GLaDOS 签到 · 成功 1 · 失败 1 · 重复 1
 | PushDeer | `type=text` | `\n` | Python 用 `pypushdeer.send_text()`，即纯文本 |
 | ServerChan | Markdown | `  \n` | 行尾两空格做硬换行；单 `\n` 会被渲染成一段 |
 
-> 早期版本给 PushDeer 传了 `type=markdown`、两个后端共用单 `\n`，导致推送内容挤成一段。已修正，并有 `node test-push.js` 做逐字比对（基准取自真实 Python 输出）。
+> 推送里的 `⏎` 位置由 `sendPushNotification` 按后端分别拼接，`node test-push.js` 做逐字比对。
 
 推送配置独立于桌面通知；两个 SendKey 都留空则不推送。
 
@@ -137,7 +138,7 @@ GLaDOS 签到 · 成功 1 · 失败 1 · 重复 1
 - 账号、Cookie、推送 Key、日志只保存在本机浏览器，不会上传到任何服务器；
 - Cookie 和 SendKey 为明文存储，请勿分享浏览器 Profile；
 - 除 GLaDOS 接口外，只会在配置推送后请求 PushDeer / ServerChan；
-- 打开设置页时会在开启「检查更新」的情况下读取一次 GitHub Release 版本号（每 6 小时最多一次），该开关可关闭；
+- 开启「检查更新」时（默认开启）会读取 GitHub Release 版本号，1 小时内最多一次，可关闭；
 - 扩展不在页面中注入广告，不加载远程代码。
 
 主要权限：
@@ -156,34 +157,83 @@ GLaDOS 签到 · 成功 1 · 失败 1 · 重复 1
 
 ## 🔄 版本与更新
 
-当前版本：`1.1.0`。
+当前版本：`1.1.1`。
 
 - `extension/` 目录始终是最新源码；
-- 发布包按版本命名，例如 `glados-checkin-extension-v1.1.0.zip`；
+- 发布包按版本命名，例如 `glados-checkin-extension-v1.1.1.zip`；
 - 加载目录不变时扩展 ID 不变，账号数据保留；
 - 下载发布包请以 GitHub Releases 的 **Latest** 为准。
 
 ### 内置更新（1.1.0 新增）
 
-设置页顶部有一条版本栏：显示当前版本、检查结果，发现新版本时出现「立即更新」。
+设置页顶部只有**一行**：`v1.1.1 · 已是最新` ＋ 一个按钮。发现新版本时才变成
+`v1.1.1 → v1.1.2  有新版本` ＋「更新到 v1.1.2」（更新说明折叠在旁边的文字按钮里）。
 
-流程与限制：
+界面状态：
 
-1. 点「检查更新」→ 读取 `api.github.com` 最新 Release 的 `tag_name`，与本地 `manifest.version` 比较（按段比较，`1.10.0 > 1.9.9`）。
-2. 点「立即更新」→ 首次会弹出**目录选择器**，请选择你在「加载已解压的扩展程序」时选的那个文件夹（即 `extension/`）。授权后会记住该目录，之后更新无需再选。
-3. 下载 Release 里的 zip，在内存中解压，校验：包内 `manifest.json` 的版本必须等于 Release 版本且比当前新；路径不得包含 `..`、绝对路径；拒绝 ZIP64。
-4. 默认先把将被覆盖的旧文件备份到扩展目录下的 `_backup/v<旧版本>/`（可关闭）。
-5. 逐文件写入，只覆盖安装包内的文件，**不删除**你目录里的其他文件。
-6. 完成后点「重新加载扩展」（调用 `chrome.runtime.reload()`），新代码生效。
+| 情形 | 显示 |
+|---|---|
+| 打开设置页 | 先显示缓存结论；过期则 `v1.1.1 · 正在检查…`（此期间不显示按钮） |
+| 已是最新 | `v1.1.1 · 已是最新（刚刚检查）` ＋「检查更新」 |
+| 有新版本 | `v1.1.1 → v1.1.2  有新版本` ＋「更新到 v1.1.2」 |
+| 更新完成 | `已更新到 v1.1.2 · 需重新加载生效` ＋「重新加载」 |
+| 检查失败 | 红底 `检查失败：<原因>` ＋「检查更新」 |
 
-为什么需要选目录：Chrome 扩展对自己的安装目录没有写权限（`chrome-extension://` 是只读的），只能通过 File System Access API 由用户授权一次。
+流程：
+
+1. 点「检查更新」→ 读 `api.github.com` 最新 Release 的 `tag_name`，与本地 `manifest.version` 按段比较（`1.10.0 > 1.9.9`）。请求 15 秒超时。
+2. 点「更新到 vX」→ **首次**会弹出目录选择器，请选「加载已解压的扩展程序」时用的那个文件夹。授权后记住，以后直接写入。
+3. 下载 zip、内存解压，校验：包内 `manifest.json` 版本必须等于 Release 且比当前新；路径不得含 `..` 或绝对路径；拒绝 ZIP64。
+4. 旧文件自动备份到扩展目录下的 `_backup/v<旧版本>/`。
+5. 只覆盖安装包内的文件，**不删除**目录里的其他文件。
+6. 完成后按钮变成「重新加载」→ 调 `chrome.runtime.reload()` 生效。
+
+为什么必须选一次目录（三个独立原因，缺一即可行）：
+
+1. **扩展拿不到自己的真实磁盘路径**。`chrome.runtime.getURL()` 只返回虚拟源 `chrome-extension://<id>/`；`chrome.management.getSelf()` 只有 id/version/installType。未打包扩展的 ID 是路径的哈希（SHA-256 前 16 字节），单向不可逆。
+2. **`chrome.runtime.getPackageDirectoryEntry()` 帮不上**。它返回的是只读的旧版 `DirectoryEntry`，URL 形如 `filesystem:chrome-extension://<id>/root/`，指向 Chrome 内部的虚拟挂载，不是磁盘目录；无法写入，也无法转成可写的 `FileSystemDirectoryHandle`。
+3. **File System Access 的设计就要求用户手势**。即使知道路径字符串，也**不能**凭空构造句柄——必须由 `showDirectoryPicker()` 在用户点击后返回。这是安全模型，无法绕过（否则任意网页都能静默读写磁盘）。
+
+结论：对「开发者模式加载的未打包扩展」，一次目录授权是平台下限，无法省略。已尽量把成本降到一次：句柄存 IndexedDB，之后每次更新都是两次点击。
 
 注意事项：
 
-- 需要 Chrome / Edge **103+**（用到 `DecompressionStream('deflate-raw')` 与 `showDirectoryPicker`）。
-- 若 `extension/` 是 git 工作区，就地更新会让 `git status` 出现改动，属预期行为；可用 `git checkout -- extension` 还原。
-- 更新不会自动进行，也不会静默改文件，必须你点确认。
+- 需要 Chrome / Edge **103+**（`DecompressionStream('deflate-raw')` + `showDirectoryPicker`）。
+- 若 `extension/` 是 git 工作区，就地更新会让 `git status` 出现改动，属预期；`git checkout -- extension` 可还原。
+- 更新绝不自动执行，必须你点确认。
 - 手动方式依旧有效：下载 zip 解压覆盖，再去扩展页点「重新加载」。
+
+## 🧪本地测试
+
+测试只跑 Node，不依赖浏览器，也不需要安装任何包：
+
+```bash
+cd extension
+node test-classify.js     # 服务端响应归类（21 项）
+node test-push.js         # 推送格式与 Python 逐字比对（10 项）
+node test-turnstile.js    # 人机验证日志文案（6 项）
+node test-rules.js        # DNR 规则 id 分配与保留标签页（10 项）
+node test-updater.js      # 版本比较 / zip 解析 / 路径安全 / 端到端写盘（23 项）
+node test-ui-hidden.js    # 更新区按钮互斥与自动检查触发（26 项）
+node test-docs.js         # 文档与代码一致性（26 项）
+```
+
+`test-push.js` 的基准值由真实 Python 代码（`checkin.py` 的 `Report.render`）生成，不是手写的。
+`test-updater.js` 会手工构造 zip 并用内存文件系统模拟写盘，验证目录穿越拦截与备份位置。
+
+## 📁文件结构
+
+```text
+extension/
+├── manifest.json        # 扩展清单（MV3）
+├── background.js        # Service Worker：调度、签到、DNR、推送
+├── inject.js            # 页面主世界：保持可见 + 旁听签到响应
+├── updater.js           # 内置更新：版本检查、zip 解压、写盘
+├── popup.html/css/js    # 工具栏弹窗：今日概览
+├── options.html/css/js  # 设置页：账号、站点、日历、调度、推送、日志
+├── icons/               # 图标
+└── test-*.js            # Node 测试（不打包进发布包）
+```
 
 ## ❓常见问题
 
@@ -215,6 +265,8 @@ GLaDOS 新版签到包含 Cloudflare Turnstile，纯 HTTP 脚本无法完成验�
 <summary><strong>Q：Cloudflare 验证失败怎么办？</strong></summary>
 
 1.0.4 起默认开启「被验证拦截时切前台人工完成」：服务端返回 `code=5` 后，扩展会把签到页切到前台并弹通知，等你完成验证；拿到令牌后自动再点一次。若 90 秒内没完成，标签页会保留（受「验证未完成时保留标签页」控制）。
+
+另外：如果保留的标签页属于 Cookie 模式账号，它**会继续携带该账号的 Cookie**（注入规则不提前移除），所以你在保留页里点签到，签的仍是这个账号，不会串到浏览器当前登录的账号上。
 
 原有注意事项仍成立：不要用机房 IP，代理节点也可能被判高风险；多账号短时间内连续签到会提高二次验证概率，建议账号之间留出间隔。
 

@@ -50,6 +50,9 @@
 
 * { box-sizing: border-box; }
 
+/* [hidden] 必须真的隐藏：否则 .acc-list{display:flex} 会覆盖 UA 规则 */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -256,7 +259,6 @@ html, body {
   color: var(--text-faint);
   text-align: center;
 }
-.empty[hidden] { display: none; }
 .empty p { margin: 0 0 10px; font-size: 12.5px; }
 
 /* ---------- 底部操作 ---------- */
