@@ -13,8 +13,8 @@
   const IDB_STORE = 'kv';
   const DIR_KEY = 'extensionDirHandle';
 
-  const BACKUP_DIR = '_backup';
-  const SKIP_PATHS = new Set(['_backup']);
+  const BACKUP_DIR = 'backups';
+  const SKIP_PATHS = new Set([BACKUP_DIR]);
 
   // ---- 小工具 ----
   function parseVer(v) {
@@ -260,7 +260,7 @@
   }
 
   /**
-   * 规范化文件列表：拒绝目录穿越与绝对路径，跳过 _backup，
+   * 规范化文件列表：拒绝目录穿越与绝对路径，跳过备份目录，
    * 并在"剥离顶层目录后才能得到根 manifest.json"时剥离该前缀。
    */
   function normalizeFiles(files) {
@@ -316,7 +316,7 @@
     }
   }
 
-  /** 把将被覆盖的旧文件复制到 _backup/v<旧版本>/ 下。 */
+  /** 把将被覆盖的旧文件复制到 backups/v<旧版本>/ 下。 */
   async function backupExisting(dir, files, oldVersion) {
     const prefix = `${BACKUP_DIR}/v${oldVersion || 'unknown'}`;
     let saved = 0;

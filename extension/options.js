@@ -638,7 +638,7 @@ async function applyUpdate() {
   const sure = confirm(
     `更新到 ${verTag}？\n\n` +
     '· 只覆盖安装包内的文件，不删除目录里的其他文件\n' +
-    '· 旧文件会备份到 _backup/\n' +
+    '· 旧文件会备份到 backups/\n' +
     '· 首次需要你指定一次扩展所在目录，之后会记住'
   );
   if (!sure) return;

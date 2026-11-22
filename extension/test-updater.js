@@ -287,10 +287,10 @@ async function putFile(dir, p, content) {
     evil.map((f) => f.path).join(','));
 
   const withBackup = U.normalizeFiles([
-    { path: '_backup/v1.0.7/background.js', data: new Uint8Array([1]) },
+    { path: 'backups/v1.0.7/background.js', data: new Uint8Array([1]) },
     { path: 'background.js', data: new Uint8Array([1]) }
   ]);
-  check('_backup 目录被跳过（避免把备份再写回去）',
+  check('备份目录被跳过（避免把备份再写回去）',
     withBackup.length === 1 && withBackup[0].path === 'background.js');
 
   const backslash = U.normalizeFiles([{ path: 'icons\\icon16.png', data: new Uint8Array([1]) }]);
@@ -313,8 +313,8 @@ async function putFile(dir, p, content) {
   check('background.js 已覆盖为新内容', readFile(root, 'background.js') === 'console.log(1);');
   check('新文件 icons/icon16.png 已创建', readFile(root, 'icons/icon16.png') === 'PNGDATA');
   check('目录里的其他文件未被删除', readFile(root, 'keep-me.txt') === 'user file');
-  check('旧文件已备份到 _backup/v1.0.7/',
-    (readFile(root, '_backup/v1.0.7/background.js') || '') === 'OLD-CODE',
+  check('旧文件已备份到 backups/v1.0.7/',
+    (readFile(root, 'backups/v1.0.7/background.js') || '') === 'OLD-CODE',
     JSON.stringify(keysOf(root)));
 
   // 版本不一致 / 不比当前新 时必须中止

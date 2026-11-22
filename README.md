@@ -74,10 +74,10 @@ Actions 版是纯 HTTP 请求，**无法通过 Cloudflare Turnstile**。如果�
 
 ### 版本
 
-当前版本：`1.1.4`。
+当前版本：`1.1.5`。
 
 - `extension/` 目录始终是**最新源码**，适合开发者和本地加载；
-- 发布包按版本号命名，例如 `glados-checkin-extension-v1.1.4.zip`；
+- 发布包按版本号命名，例如 `glados-checkin-extension-v1.1.5.zip`；
 - 加载目录不变时扩展 ID 不变，账号数据保留；
 - 不要把 `latest` 当成唯一文件名；以 GitHub Releases 的 **Latest** 为准，版本化包便于回退和排查。
 
@@ -388,6 +388,11 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 - 推送兼容 Server酱。
 
 **2026-11**
+
+**1.1.5**
+
+- 修复在线更新后扩展无法加载：旧文件备份目录原为 `_backup/`，而 Chrome/Edge 保留所有以 `_` 开头的文件名，导致加载报错。改为 `backups/`；
+- 若本地已存在 `_backup/` 目录，需手动删除后重新加载扩展。
 
 **1.1.4**
 
