@@ -74,10 +74,10 @@ Actions 版是纯 HTTP 请求，**无法通过 Cloudflare Turnstile**。如果�
 
 ### 版本
 
-当前版本：`1.1.3`。
+当前版本：`1.1.4`。
 
 - `extension/` 目录始终是**最新源码**，适合开发者和本地加载；
-- 发布包按版本号命名，例如 `glados-checkin-extension-v1.1.3.zip`；
+- 发布包按版本号命名，例如 `glados-checkin-extension-v1.1.4.zip`；
 - 加载目录不变时扩展 ID 不变，账号数据保留；
 - 不要把 `latest` 当成唯一文件名；以 GitHub Releases 的 **Latest** 为准，版本化包便于回退和排查。
 
@@ -388,6 +388,11 @@ Windows PowerShell 用 `$env:GLADOS_COOKIES='[...]'`。
 - 推送兼容 Server酱。
 
 **2026-11**
+
+**1.1.4**
+
+- 与 v1.1.3 功能相同，仅作为在线更新修复的验证版本发布，方便确认下载流程已恢复正常；
+- 测试文件中的 mock 版本号同步至当前版本。
 
 **1.1.3**
 
