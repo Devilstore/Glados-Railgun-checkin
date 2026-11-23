@@ -15,13 +15,23 @@
 
   const BACKUP_DIR = 'backups';
   const SKIP_PATHS = new Set([BACKUP_DIR]);
+  const MAX_FILE_BYTES = 50 * 1024 * 1024;
+  const MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 
   // ---- 小工具 ----
+  function isNotFound(e) {
+    return !!(e && (e.name === 'NotFoundError' || /not\s*found/i.test(e.message || '')));
+  }
+
   function parseVer(v) {
     const m = String(v == null ? '' : v).trim().replace(/^v/i, '')
-      .match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+      .match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?/);
     if (!m) return null;
-    return [Number(m[1] || 0), Number(m[2] || 0), Number(m[3] || 0)];
+    return [Number(m[1] || 0), Number(m[2] || 0), Number(m[3] || 0), Number(m[4] || 0)];
+  }
+
+  function isValidVer(v) {
+    return parseVer(v) != null;
   }
 
   /** @returns {number} a>b 返回 1，相等 0，a<b 返回 -1 */
@@ -29,7 +39,7 @@
     const pa = parseVer(a);
     const pb = parseVer(b);
     if (!pa || !pb) return 0;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       if (pa[i] > pb[i]) return 1;
       if (pa[i] < pb[i]) return -1;
     }
@@ -57,6 +67,7 @@
         const req = tx.objectStore(IDB_STORE).get(key);
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
+        tx.onabort = () => reject(tx.error || new Error('事务中止'));
       });
     } finally {
       db.close();
@@ -71,6 +82,7 @@
         tx.objectStore(IDB_STORE).put(value, key);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('事务中止'));
       });
     } finally {
       db.close();
@@ -185,6 +197,10 @@
       try {
         const perm = await handle.queryPermission({ mode: 'readwrite' });
         if (perm === 'granted') return handle;
+        if (perm === 'prompt' && typeof handle.requestPermission === 'function') {
+          const granted = await handle.requestPermission({ mode: 'readwrite' });
+          if (granted === 'granted') return handle;
+        }
       } catch (e) { /* 句柄失效，走选择器 */ }
     }
     return pickDir();
@@ -196,13 +212,33 @@
   }
 
   // ---- ZIP 解压 ----
-  async function inflateRaw(raw) {
+  async function inflateRaw(raw, limit) {
     if (typeof DecompressionStream !== 'function') {
       throw new Error('当前浏览器不支持解压 API（需要 Chrome/Edge 103+）');
     }
+    const max = limit == null ? MAX_FILE_BYTES : limit;
     const stream = new Response(raw).body.pipeThrough(new DecompressionStream('deflate-raw'));
-    const buf = await new Response(stream).arrayBuffer();
-    return new Uint8Array(buf);
+    const reader = stream.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > max) {
+          await reader.cancel();
+          throw new Error('解压数据超过上限，已中止');
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const out = new Uint8Array(total);
+    let pos = 0;
+    for (const c of chunks) { out.set(c, pos); pos += c.length; }
+    return out;
   }
 
   /**
@@ -217,13 +253,18 @@
     let eocd = -1;
     const floor = Math.max(0, u8.length - 65557);
     for (let i = u8.length - 22; i >= floor; i--) {
-      if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+      if (dv.getUint32(i, true) === 0x06054b50) {
+        const commentLen = dv.getUint16(i + 20, true);
+        if (i + 22 + commentLen <= u8.length) { eocd = i; break; }
+      }
     }
     if (eocd < 0) throw new Error('不是有效的 zip 文件');
 
     const count = dv.getUint16(eocd + 10, true);
     let off = dv.getUint32(eocd + 16, true);
     const out = [];
+    let total = 0;
+    let declaredTotal = 0;
 
     for (let i = 0; i < count; i++) {
       if (off + 46 > u8.length || dv.getUint32(off, true) !== 0x02014b50) {
@@ -231,6 +272,7 @@
       }
       const method = dv.getUint16(off + 10, true);
       const compSize = dv.getUint32(off + 20, true);
+      const uncompSize = dv.getUint32(off + 24, true);
       const nameLen = dv.getUint16(off + 28, true);
       const extraLen = dv.getUint16(off + 30, true);
       const commentLen = dv.getUint16(off + 32, true);
@@ -239,14 +281,27 @@
       off += 46 + nameLen + extraLen + commentLen;
 
       if (name.endsWith('/')) continue;                    // 目录项
-      if (compSize === 0xffffffff || localOff === 0xffffffff) {
+      if (compSize === 0xffffffff || uncompSize === 0xffffffff || localOff === 0xffffffff) {
         throw new Error('不支持 ZIP64 格式');
       }
+      if (uncompSize > MAX_FILE_BYTES) throw new Error('解压文件超过 50MB 上限');
+      declaredTotal += uncompSize;
+      if (declaredTotal > MAX_TOTAL_BYTES) throw new Error('解压总量超过 200MB 上限');
 
-      if (dv.getUint32(localOff, true) !== 0x04034b50) throw new Error('zip 本地头损坏');
+      if (localOff + 30 > u8.length || dv.getUint32(localOff, true) !== 0x04034b50) {
+        throw new Error('zip 本地头损坏');
+      }
+      const flags = dv.getUint16(localOff + 6, true);
       const lNameLen = dv.getUint16(localOff + 26, true);
       const lExtraLen = dv.getUint16(localOff + 28, true);
+      const lCompSize = dv.getUint32(localOff + 18, true);
+      const lName = new TextDecoder('utf-8').decode(u8.subarray(localOff + 30, localOff + 30 + lNameLen));
+      if (lName !== name) throw new Error('zip 本地头文件名与中央目录不一致');
+      if (!(flags & 0x08) && lCompSize !== compSize) {
+        throw new Error('zip 本地头压缩大小与中央目录不一致');
+      }
       const dataStart = localOff + 30 + lNameLen + lExtraLen;
+      if (dataStart + compSize > u8.length) throw new Error('zip 数据越界');
       const raw = u8.subarray(dataStart, dataStart + compSize);
 
       let data;
@@ -254,6 +309,9 @@
       else if (method === 8) data = await inflateRaw(raw);
       else throw new Error(`不支持的压缩方式 ${method}（${name}）`);
 
+      total += data.length;
+      if (data.length > MAX_FILE_BYTES) throw new Error('解压文件超过 50MB 上限');
+      if (total > MAX_TOTAL_BYTES) throw new Error('解压总量超过 200MB 上限');
       out.push({ path: name, data });
     }
     return out;
@@ -261,7 +319,7 @@
 
   /**
    * 规范化文件列表：拒绝目录穿越与绝对路径，跳过备份目录，
-   * 并在"剥离顶层目录后才能得到根 manifest.json"时剥离该前缀。
+   * 并在需要时剥离顶层前缀以得到根 manifest.json。
    */
   function normalizeFiles(files) {
     const safe = [];
@@ -272,22 +330,24 @@
       const parts = p.split('/').filter((s) => s && s !== '.');
       if (!parts.length) continue;
       if (parts.some((s) => s === '..')) continue;
-      if (SKIP_PATHS.has(parts[0])) continue;
+      if (SKIP_PATHS.has(parts[0]) || parts[0] === '__MACOSX') continue;
+      if (parts[parts.length - 1] === '.DS_Store') continue;
       safe.push({ path: parts.join('/'), parts, data: f.data });
     }
 
-    const hasRootManifest = safe.some((f) => f.path === 'manifest.json');
-    if (!hasRootManifest && safe.length) {
-      const first = safe[0].parts[0];
-      const allUnder = safe.every((f) => f.parts.length > 1 && f.parts[0] === first);
-      const stripped = allUnder
-        ? safe.map((f) => ({
-            path: f.parts.slice(1).join('/'),
-            parts: f.parts.slice(1),
-            data: f.data
-          }))
-        : null;
-      if (stripped && stripped.some((f) => f.path === 'manifest.json')) return stripped;
+    if (!safe.length || safe.some((f) => f.path === 'manifest.json')) return safe;
+
+    const prefixes = [...new Set(safe.map((f) => f.parts[0]))];
+    for (const prefix of prefixes) {
+      for (const depth of [1, 2]) {
+        const stripped = [];
+        for (const f of safe) {
+          const parts = f.parts[0] === prefix ? f.parts.slice(depth) : f.parts;
+          if (!parts.length) continue;
+          stripped.push({ path: parts.join('/'), parts, data: f.data });
+        }
+        if (stripped.some((f) => f.path === 'manifest.json')) return stripped;
+      }
     }
     return safe;
   }
@@ -316,13 +376,43 @@
     }
   }
 
+  /** 写入前预检类型冲突，避免写了一半才失败。 */
+  async function assertNoConflict(dir, files) {
+    for (const f of files) {
+      let node = dir;
+      let exists = true;
+      for (let i = 0; i < f.parts.length - 1; i++) {
+        const name = f.parts[i];
+        let child = null;
+        try { child = await node.getDirectoryHandle(name, { create: false }); }
+        catch (e) {
+          if (!isNotFound(e)) throw e;
+          let asFile = null;
+          try { asFile = await node.getFileHandle(name, { create: false }); }
+          catch (e2) { if (!isNotFound(e2)) throw e2; }
+          if (asFile) throw new Error(`路径冲突：${name} 是文件，不能作为目录`);
+          exists = false;
+          break;
+        }
+        node = child;
+      }
+      if (!exists) continue;
+      const lastName = f.parts[f.parts.length - 1];
+      let asDir = null;
+      try { asDir = await node.getDirectoryHandle(lastName, { create: false }); }
+      catch (e) { if (!isNotFound(e)) throw e; }
+      if (asDir) throw new Error(`路径冲突：${lastName} 是目录，不能写入文件`);
+    }
+  }
+
   /** 把将被覆盖的旧文件复制到 backups/v<旧版本>/ 下。 */
   async function backupExisting(dir, files, oldVersion) {
     const prefix = `${BACKUP_DIR}/v${oldVersion || 'unknown'}`;
     let saved = 0;
     for (const f of files) {
-      let old = null;
-      try { old = await readExisting(dir, f.parts); } catch (e) { continue; }  // 新文件，无需备份
+      let old;
+      try { old = await readExisting(dir, f.parts); }
+      catch (e) { if (isNotFound(e)) continue; throw e; }
       await writeOne(dir, [...prefix.split('/'), ...f.parts], old);
       saved++;
     }
@@ -350,7 +440,12 @@
       throw new Error(`下载安装包失败：${e.message}（GitHub 下载域名需已授权，请确认扩展为最新版）`);
     }
     if (!resp.ok) throw new Error(`下载失败：HTTP ${resp.status}`);
+    if (resp.headers && typeof resp.headers.get === 'function') {
+      const len = Number(resp.headers.get('content-length'));
+      if (len > MAX_TOTAL_BYTES) throw new Error('安装包超过 200MB 上限，已拒绝下载');
+    }
     const buf = await resp.arrayBuffer();
+    if (buf.byteLength > MAX_TOTAL_BYTES) throw new Error('安装包超过 200MB 上限，已拒绝下载');
 
     progress('正在解压…');
     const files = normalizeFiles(await unzip(buf));
@@ -365,6 +460,9 @@
       pkgVersion = String(JSON.parse(new TextDecoder('utf-8').decode(man.data)).version || '');
     } catch (e) { /* 解析失败下面会报 */ }
     if (!pkgVersion) throw new Error('压缩包里的 manifest.json 无法解析');
+    if (!isValidVer(pkgVersion) || !isValidVer(release.version)) {
+      throw new Error('版本号非法，已中止更新');
+    }
     if (compareVer(pkgVersion, release.version) !== 0) {
       throw new Error(`包内版本 ${pkgVersion} 与 Release ${release.version} 不一致，已中止`);
     }
@@ -372,14 +470,12 @@
       throw new Error(`包内版本 ${pkgVersion} 不比当前 ${oldVersion} 新，已中止`);
     }
 
+    await assertNoConflict(dir, files);
+
     let backupFiles = 0;
     if (options.backup !== false) {
       progress('正在备份旧文件…');
-      try {
-        backupFiles = await backupExisting(dir, files, oldVersion);
-      } catch (e) {
-        backupFiles = -1;   // 备份失败不阻断更新
-      }
+      backupFiles = await backupExisting(dir, files, oldVersion);
     }
 
     progress(`正在写入 ${files.length} 个文件…`);
@@ -396,6 +492,7 @@
   window.Updater = {
     REPO,
     parseVer,
+    isValidVer,
     compareVer,
     fetchLatest,
     fetchWithTimeout,

@@ -21,6 +21,17 @@ const calls = {
 
 let onRemovedHandler = null;
 
+const sessionStore = {};
+const sessionStorage = {
+  async get(keys) {
+    const list = Array.isArray(keys) ? keys : [keys];
+    const out = {};
+    list.forEach((k) => { if (k in sessionStore) out[k] = JSON.parse(JSON.stringify(sessionStore[k])); });
+    return out;
+  },
+  async set(patch) { Object.assign(sessionStore, JSON.parse(JSON.stringify(patch))); }
+};
+
 const sandbox = {
   console,
   setTimeout, clearTimeout, setInterval, clearInterval,
@@ -35,7 +46,11 @@ const sandbox = {
       getPlatformInfo: (cb) => cb && cb({}), lastError: null
     },
     alarms: { onAlarm: { addListener: noop }, get: asyncNoop, create: noop, clear: asyncNoop },
-    storage: { local: { get: async () => ({}), set: asyncNoop }, onChanged: { addListener: noop } },
+    storage: {
+      local: { get: async () => ({}), set: asyncNoop },
+      session: sessionStorage,
+      onChanged: { addListener: noop }
+    },
     declarativeNetRequest: {
       updateSessionRules: async ({ removeRuleIds, addRules }) => {
         (removeRuleIds || []).forEach((id) => calls.removedRules.push(id));
@@ -70,7 +85,7 @@ if (!nextRuleId || !releaseRuleId) {
 
 const rows = [];
 let pass = 0;
-const total = 18;
+const total = 23;
 function check(name, cond, extra) {
   if (cond) pass++;
   rows.push(`${cond ? '[OK  ]' : '[FAIL]'} ${name}${cond || !extra ? '' : '  → ' + extra}`);
@@ -154,6 +169,27 @@ function check(name, cond, extra) {
       r0.condition.urlFilter === '||' + site.domain,
       String(r0.condition.urlFilter));
   }
+
+  // 8) 保留标签页写入 session storage
+  await closeSessionTab(301, a2, true, account.id);
+  const snap = () => (sessionStore.gcd_kept_tabs || []).map((x) => x.tabId);
+  check('保留标签页写入 session storage', snap().includes(301), JSON.stringify(snap()));
+
+  // 9) onRemoved 同步更新 session
+  onRemovedHandler(301);
+  await new Promise((r) => setTimeout(r, 30));
+  check('标签页关闭后 session 记录同步移除', !snap().includes(301), JSON.stringify(snap()));
+
+  // 10) 启动清理：恢复 session 记录并关闭残留标签页与规则
+  sessionStore.gcd_kept_tabs = [{ tabId: 401, accountId: account.id, ruleId: a1 }];
+  calls.removedTabs.length = 0;
+  calls.removedRules.length = 0;
+  await sandbox.cleanupKeptTabsOnStartup();
+  check('启动清理关闭 session 中的残留标签页', calls.removedTabs.includes(401),
+    JSON.stringify(calls.removedTabs));
+  check('启动清理移除残留 DNR 规则', calls.removedRules.includes(a1),
+    JSON.stringify(calls.removedRules));
+  check('启动清理后 session 记录清空', snap().length === 0, JSON.stringify(snap()));
 
   console.log('=== 规则 ID 与保留标签页测试 ===\n');
   rows.forEach((l) => console.log('  ' + l));

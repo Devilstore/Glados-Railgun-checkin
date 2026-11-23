@@ -117,7 +117,7 @@ function buildZip(entries) {
     central.writeUInt16LE(0, 14);
     central.writeUInt32LE(0, 16);
     central.writeUInt32LE(body.length, 20);
-    central.writeUInt32LE(data.length, 24);
+    central.writeUInt32LE(e.uncompSize != null ? e.uncompSize : data.length, 24);
     central.writeUInt16LE(nameBuf.length, 28);
     central.writeUInt16LE(0, 30);
     central.writeUInt16LE(0, 32);
@@ -240,6 +240,12 @@ async function putFile(dir, p, content) {
   check('1.0 == 1.0.0（缺省补零）', U.compareVer('1.0', '1.0.0') === 0);
   check('1.0.6 < 1.0.7', U.compareVer('1.0.6', '1.0.7') === -1);
   check('非法版本号返回 null', U.parseVer('abc') === null);
+  check('1.2.3.4 解析为四段',
+    JSON.stringify(U.parseVer('1.2.3.4')) === '[1,2,3,4]',
+    JSON.stringify(U.parseVer('1.2.3.4')));
+  check('1.2.3.4 > 1.2.3.3', U.compareVer('1.2.3.4', '1.2.3.3') === 1);
+  check('isValidVer 识别合法与非法版本',
+    U.isValidVer('1.2.3.4') === true && U.isValidVer('v2') === true && U.isValidVer('abc') === false);
 
   // ---- 2. 解压 ----
   const manifest = JSON.stringify({ manifest_version: 3, version: '1.1.0', name: 't' });
@@ -258,6 +264,34 @@ async function putFile(dir, p, content) {
   check('store 条目内容正确', byPath.get('icons/icon16.png') === 'PNGDATA');
   check('嵌套路径保持原样', byPath.has('icons/icon16.png'));
 
+  const bombBuf = buildZip([{ name: 'bomb.txt', data: 'x', method: 8, uncompSize: 60 * 1024 * 1024 }]);
+  let bombErr = null;
+  try { await U.unzip(bombBuf); } catch (e) { bombErr = e.message; }
+  check('压缩炸弹（单文件解压 >50MB）被拒绝', /50MB/.test(bombErr || ''), bombErr || 'no error');
+
+  const many = [];
+  for (let i = 0; i < 5; i++) many.push({ name: `b${i}.txt`, data: 'x', method: 8, uncompSize: 45 * 1024 * 1024 });
+  let totalErr = null;
+  try { await U.unzip(buildZip(many)); } catch (e) { totalErr = e.message; }
+  check('解压总量 >200MB 被拒绝', /200MB/.test(totalErr || ''), totalErr || 'no error');
+
+  const badLocal = new Uint8Array(buildZip([{ name: 'manifest.json', data: '{}' }]));
+  badLocal.set(Buffer.from('manifesX.json'), 30);
+  let mismatchErr = null;
+  try { await U.unzip(badLocal.buffer); } catch (e) { mismatchErr = e.message; }
+  check('本地头文件名与中央目录不一致时拒绝', /不一致/.test(mismatchErr || ''), mismatchErr || 'no error');
+
+  const realZip = new Uint8Array(buildZip([{ name: 'manifest.json', data: '{}' }]));
+  const fakeEocd = Buffer.alloc(22);
+  fakeEocd.writeUInt32LE(0x06054b50, 0);
+  fakeEocd.writeUInt16LE(0xffff, 20);
+  const withFake = new Uint8Array(realZip.length + fakeEocd.length);
+  withFake.set(realZip, 0);
+  withFake.set(fakeEocd, realZip.length);
+  let fakeOk = false;
+  try { fakeOk = (await U.unzip(withFake.buffer)).length === 1; } catch (e) { fakeOk = false; }
+  check('EOCD 假签名（非法 commentLen）被跳过', fakeOk);
+
   // ---- 3. 顶层目录剥离 ----
   const nested = U.normalizeFiles([
     { path: 'extension/manifest.json', data: new Uint8Array([1]) },
@@ -273,6 +307,24 @@ async function putFile(dir, p, content) {
   ]);
   check('已有根 manifest.json 时不剥离',
     notNested.some((f) => f.path === 'extension/background.js'));
+
+  const mixed = U.normalizeFiles([
+    { path: 'LICENSE', data: new Uint8Array([1]) },
+    { path: 'Repo-main/extension/manifest.json', data: new Uint8Array([2]) },
+    { path: 'Repo-main/extension/background.js', data: new Uint8Array([3]) },
+    { path: '__MACOSX/._junk', data: new Uint8Array([4]) }
+  ]);
+  const mixedPaths = mixed.map((f) => f.path).sort().join(',');
+  check('顶层混入 LICENSE + 子目录 manifest 时正确剥离',
+    mixedPaths === 'LICENSE,background.js,manifest.json', mixedPaths);
+
+  const twoLevel = U.normalizeFiles([
+    { path: 'Repo-main/extension/manifest.json', data: new Uint8Array([1]) },
+    { path: 'Repo-main/extension/popup.html', data: new Uint8Array([2]) }
+  ]);
+  check('两层前缀被剥离',
+    twoLevel.map((f) => f.path).sort().join(',') === 'manifest.json,popup.html',
+    twoLevel.map((f) => f.path).join(','));
 
   // ---- 4. 路径安全 ----
   const evil = U.normalizeFiles([
@@ -337,6 +389,75 @@ async function putFile(dir, p, content) {
   threw = null;
   try { await U.apply({ version: '1.0.7', zip: { name: 'z.zip', url: 'https://example/z.zip' } }, { backup: false }); } catch (e) { threw = e.message; }
   check('包内版本不比当前新时中止', /不比当前/.test(threw || ''), threw || 'no error');
+
+  // Content-Length 超限
+  sandbox.fetch = async () => ({
+    ok: true, status: 200,
+    headers: { get: () => '300000000' },
+    arrayBuffer: async () => zipBuf
+  });
+  let lenErr = null;
+  try { await U.apply(release, { backup: false }); } catch (e) { lenErr = e.message; }
+  check('Content-Length 超过 200MB 时拒绝下载', /200MB/.test(lenErr || ''), lenErr || 'no error');
+
+  // 非法版本使双闸失效
+  sandbox.fetch = async () => ({
+    ok: true, status: 200, headers: { get: () => null },
+    arrayBuffer: async () => buildZip([{ name: 'manifest.json', data: JSON.stringify({ version: '1.1.0' }) }])
+  });
+  let illegalErr = null;
+  try {
+    await U.apply({ version: 'abc', zip: { name: 'i.zip', url: 'https://example/i.zip' } }, { backup: false });
+  } catch (e) { illegalErr = e.message; }
+  check('非法 Release 版本中止更新', /非法/.test(illegalErr || ''), illegalErr || 'no error');
+
+  // 写盘前类型冲突预检：中间分量是文件
+  const conflictRoot = makeDir('conflict');
+  await putFile(conflictRoot, 'background.js', 'OLD');
+  await putFile(conflictRoot, 'manifest.json', JSON.stringify({ version: '1.1.0' }));
+  await putFile(conflictRoot, 'icons', 'not a dir');
+  sandbox.window.showDirectoryPicker = async () => conflictRoot;
+  sandbox.fetch = async () => ({ ok: true, status: 200, arrayBuffer: async () => zipBuf });
+  let conflictErr = null;
+  try { await U.apply(release, { backup: false }); } catch (e) { conflictErr = e.message; }
+  check('中间分量是文件时中止', /冲突/.test(conflictErr || ''), conflictErr || 'no error');
+  check('冲突时未写任何文件',
+    readFile(conflictRoot, 'icons/icon16.png') === null && readFile(conflictRoot, 'background.js') === 'OLD');
+
+  // 写盘前类型冲突预检：末分量是目录
+  const conflictRoot2 = makeDir('conflict2');
+  await putFile(conflictRoot2, 'manifest.json', JSON.stringify({ version: '1.1.0' }));
+  await putFile(conflictRoot2, 'background.js/x', 'x');
+  sandbox.window.showDirectoryPicker = async () => conflictRoot2;
+  let conflict2Err = null;
+  try { await U.apply(release, { backup: false }); } catch (e) { conflict2Err = e.message; }
+  check('末分量是目录时中止', /冲突/.test(conflict2Err || ''), conflict2Err || 'no error');
+  check('冲突2 时未写任何新文件', readFile(conflictRoot2, 'icons/icon16.png') === null);
+
+  // 备份失败必须中止更新（非 NotFoundError）
+  const backupFailRoot = makeDir('backupfail');
+  await putFile(backupFailRoot, 'manifest.json', JSON.stringify({ version: '1.0.7' }));
+  await putFile(backupFailRoot, 'background.js', 'OLD');
+  const origGetFile = backupFailRoot.getFileHandle.bind(backupFailRoot);
+  backupFailRoot.getFileHandle = async (n, opt) => {
+    if (n === 'background.js' && (!opt || !opt.create)) throw new Error('EACCES: 读取旧文件失败');
+    return origGetFile(n, opt);
+  };
+  sandbox.window.showDirectoryPicker = async () => backupFailRoot;
+  let backupErr = null;
+  try { await U.apply(release, { backup: true }); } catch (e) { backupErr = e.message; }
+  check('备份失败时中止更新', /EACCES/.test(backupErr || ''), backupErr || 'no error');
+  check('备份失败时不写入新文件', readFile(backupFailRoot, 'background.js') === 'OLD');
+
+  // prompt 权限下请求成功则复用句柄
+  const reuse = makeDir('reuse');
+  reuse.queryPermission = async () => 'prompt';
+  let asked = false;
+  reuse.requestPermission = async () => { asked = true; return 'granted'; };
+  kvStore.set('extensionDirHandle', reuse);
+  const reused = await U.ensureDir();
+  check('prompt 权限下 requestPermission 成功后复用句柄', reused === reuse && asked);
+  kvStore.set('extensionDirHandle', null);
 
   console.log('=== 更新模块测试 ===\n');
   rows.forEach((l) => console.log('  ' + l));

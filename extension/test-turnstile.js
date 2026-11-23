@@ -82,9 +82,38 @@ tsNote(null, 'x');
 const orderOk = ev.length === 2 && ev[0] === 'b' && ev[1] === 'a';
 rows.push(`${orderOk ? '[OK  ]' : '[FAIL]'} tsNote 保序且忽略空值`);
 if (orderOk) pass++;
-const total = cases.length + 1;
 
-console.log('=== 人机验证日志文案测试 ===\n');
-rows.forEach((l) => console.log('  ' + l));
-console.log(`\n${pass}/${total} 通过`);
-process.exit(pass === total ? 0 : 1);
+(async () => {
+  const execOrig = sandbox.chrome.scripting.executeScript;
+
+  let execCalls = 0;
+  sandbox.chrome.scripting.executeScript = async () => {
+    execCalls++;
+    if (execCalls === 1) {
+      throw new Error('Execution context was destroyed, most likely because of a navigation');
+    }
+    return [{ result: { token: 'TK' } }];
+  };
+  const gotToken = await sandbox.waitTurnstileToken(1, 1000);
+  sandbox.chrome.scripting.executeScript = execOrig;
+  const navOk = gotToken === true;
+  rows.push(`${navOk ? '[OK  ]' : '[FAIL]'} waitTurnstileToken 忽略导航瞬时错误并继续轮询` +
+    (navOk ? '' : `  → calls=${execCalls}`));
+  if (navOk) pass++;
+
+  sandbox.chrome.scripting.executeScript = async () => { throw new Error('No tab with id: 999'); };
+  const t0 = Date.now();
+  const closed = await sandbox.waitTurnstileToken(999, 5000);
+  const elapsed = Date.now() - t0;
+  sandbox.chrome.scripting.executeScript = execOrig;
+  const fatalOk = closed === false && elapsed < 1000;
+  rows.push(`${fatalOk ? '[OK  ]' : '[FAIL]'} waitTurnstileToken 标签页关闭时立即退出` +
+    (fatalOk ? '' : `  → elapsed=${elapsed}`));
+  if (fatalOk) pass++;
+
+  const total = cases.length + 3;
+  console.log('=== 人机验证日志文案测试 ===\n');
+  rows.forEach((l) => console.log('  ' + l));
+  console.log(`\n${pass}/${total} 通过`);
+  process.exit(pass === total ? 0 : 1);
+})();

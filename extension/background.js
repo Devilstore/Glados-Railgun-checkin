@@ -16,7 +16,7 @@ const ALL_RESOURCE_TYPES = [
 const RULE_ID_BASE = 700000;
 const LOG_LIMIT = 300;
 
-const EXT_VERSION = '1.1.5';
+const EXT_VERSION = '1.1.6';
 
 
 const DEFAULT_SITES = [
@@ -90,11 +90,10 @@ const ALARM_DELAY = 'gcd_random_delay';
 const DELAY_PLAN = 'gcd_delay_plan';
 
 // ---- Service Worker 保活 ----
-// MV3 SW 空闲约 30 秒会被回收，签到流程中大量 await sleep() 容易触发，
-// 期间周期性调用扩展 API 即可重置空闲计时。
 
 let keepAliveTimer = null;
 let keepAliveRefs = 0;
+let keepAlivePort = null;
 
 function acquireKeepAlive() {
   keepAliveRefs++;
@@ -103,15 +102,31 @@ function acquireKeepAlive() {
     try {
       chrome.runtime.getPlatformInfo(() => void chrome.runtime.lastError);
     } catch (e) { /* ignore */ }
-  }, 20000);
+  }, 10000);
+  try {
+    if (chrome.runtime.connect) {
+      keepAlivePort = chrome.runtime.connect({ name: 'gcd-keepalive' });
+      keepAlivePort.onDisconnect.addListener(() => { keepAlivePort = null; });
+    }
+  } catch (e) { /* ignore */ }
 }
 
 function releaseKeepAlive() {
   keepAliveRefs = Math.max(0, keepAliveRefs - 1);
-  if (keepAliveRefs === 0 && keepAliveTimer) {
+  if (keepAliveRefs > 0) return;
+  if (keepAliveTimer) {
     clearInterval(keepAliveTimer);
     keepAliveTimer = null;
   }
+  if (keepAlivePort) {
+    try { keepAlivePort.disconnect(); } catch (e) { /* ignore */ }
+    keepAlivePort = null;
+  }
+}
+
+// 自连接对端：连接保持期间 SW 不会被回收
+if (chrome.runtime.onConnect) {
+  chrome.runtime.onConnect.addListener(() => {});
 }
 
 
@@ -184,6 +199,14 @@ function pushLog(entry) {
   return next;
 }
 
+let accountChain = Promise.resolve();
+
+function withAccountLock(fn) {
+  const next = accountChain.then(fn);
+  accountChain = next.catch(() => {});
+  return next;
+}
+
 // ---- 账号状态更新 ----
 
 function retryStatePatch(account, result) {
@@ -210,13 +233,15 @@ function retryStatePatch(account, result) {
 }
 
 async function updateAccount(accountId, patch) {
-  const raw = await chrome.storage.local.get('accounts');
-  const accounts = Array.isArray(raw.accounts) ? raw.accounts : [];
-  const idx = accounts.findIndex((a) => a.id === accountId);
-  if (idx === -1) return null;
-  accounts[idx] = Object.assign({}, accounts[idx], patch);
-  await chrome.storage.local.set({ accounts });
-  return accounts[idx];
+  return withAccountLock(async () => {
+    const raw = await chrome.storage.local.get('accounts');
+    const accounts = Array.isArray(raw.accounts) ? raw.accounts : [];
+    const idx = accounts.findIndex((a) => a.id === accountId);
+    if (idx === -1) return null;
+    accounts[idx] = Object.assign({}, accounts[idx], patch);
+    await chrome.storage.local.set({ accounts });
+    return accounts[idx];
+  });
 }
 
 // ---- 账号认证方式 ----
@@ -510,7 +535,10 @@ async function waitTurnstileToken(tabId, timeoutMs) {
       const state = (res && res[0] && res[0].result) || {};
       if (state.token) return true;
     } catch (e) {
-      return false;
+      const msg = String((e && e.message) || e);
+      if (/no tab with id|no such tab|target closed|tab.*clos|receiving end does not exist/i.test(msg)) {
+        return false;
+      }
     }
     await sleep(300);
   }
@@ -707,7 +735,7 @@ function watchTurnstileDuringClick(tabId, settings, events) {
 
   return {
     promise,
-    stop() { stopped = true; }
+    stop() { stopped = true; return promise; }
   };
 }
 
@@ -1138,21 +1166,62 @@ async function openSessionTab(account, site, path, opts) {
  * 保留期间不移除 DNR 规则（否则会退化成浏览器登录态、可能签错账号），
  * 标签页关闭时才清理。
  */
+const KEPT_TABS_KEY = 'gcd_kept_tabs';
 const keptTabs = new Map();
 
-function registerKeptTab(tabId, accountId, ruleId) {
+async function loadKeptTabs() {
+  try {
+    const raw = await chrome.storage.session.get(KEPT_TABS_KEY);
+    const list = raw && raw[KEPT_TABS_KEY];
+    if (Array.isArray(list)) {
+      keptTabs.clear();
+      list.forEach((x) => {
+        if (x && x.tabId != null) {
+          keptTabs.set(Number(x.tabId), { accountId: x.accountId, ruleId: x.ruleId || null });
+        }
+      });
+    }
+  } catch (e) { /* session 不可用按空处理 */ }
+}
+
+async function persistKeptTabs() {
+  const list = Array.from(keptTabs.entries()).map(([tabId, info]) => ({
+    tabId, accountId: info.accountId, ruleId: info.ruleId || null
+  }));
+  try {
+    await chrome.storage.session.set({ [KEPT_TABS_KEY]: list });
+  } catch (e) { /* ignore */ }
+}
+
+async function cleanupKeptTabsOnStartup() {
+  await loadKeptTabs();
+  for (const [tabId, info] of Array.from(keptTabs.entries())) {
+    if (info.ruleId) await removeRule(info.ruleId);
+    try { await chrome.tabs.remove(tabId); } catch (e) { /* 已关闭 */ }
+  }
+  keptTabs.clear();
+  await persistKeptTabs();
+}
+
+cleanupKeptTabsOnStartup().catch(() => {});
+
+async function registerKeptTab(tabId, accountId, ruleId) {
   if (tabId == null) return;
   keptTabs.set(tabId, { accountId, ruleId: ruleId || null });
+  await persistKeptTabs();
 }
 
 /** 关掉某账号遗留的保留标签页（开始新一轮签到前调用）。 */
 async function closeKeptTabForAccount(accountId) {
+  let changed = false;
   for (const [tabId, info] of Array.from(keptTabs.entries())) {
     if (info.accountId !== accountId) continue;
     keptTabs.delete(tabId);
+    changed = true;
     try { if (info.ruleId) await removeRule(info.ruleId); } catch (e) { /* ignore */ }
     try { await chrome.tabs.remove(tabId); } catch (e) { /* 已关闭 */ }
   }
+  if (changed) await persistKeptTabs();
 }
 
 if (chrome.tabs && chrome.tabs.onRemoved) {
@@ -1160,6 +1229,7 @@ if (chrome.tabs && chrome.tabs.onRemoved) {
     const info = keptTabs.get(tabId);
     if (!info) return;
     keptTabs.delete(tabId);
+    persistKeptTabs().catch(() => {});
     if (info.ruleId) {
       removeRule(info.ruleId).catch(() => { /* ignore */ });
     }
@@ -1172,7 +1242,7 @@ if (chrome.tabs && chrome.tabs.onRemoved) {
  */
 async function closeSessionTab(tabId, ruleId, keepTab, accountId) {
   if (keepTab) {
-    registerKeptTab(tabId, accountId, ruleId);
+    await registerKeptTab(tabId, accountId, ruleId);
     return;
   }
   try { if (ruleId) await removeRule(ruleId); } catch (e) { /* ignore */ }
@@ -1256,7 +1326,7 @@ async function getCalendar(account, site, days) {
     await closeSessionTab(tabId, ruleId);
   }
 }
-/** 单账号签到。opts: { force 忽略本地已签记录, reclick 强制点击 } */
+/** 单账号签到。opts: { force 忽略本地已签记录 } */
 /**
  * 执行积分兑换。请求格式对齐 Python 版：POST /api/user/exchange，
  * body 为 form-urlencoded，字段 planType。
@@ -1348,16 +1418,13 @@ async function checkinOne(account, site, settings, trigger, opts) {
     // 5. 前哨检查：服务端已有今日记录就不再点按钮
     if (result.servedAlready) {
       const pts = result.servedTodayPoints;
-      if (!options.reclick) {
-        result.status = 'repeat';
-        result.already = true;
-        result.message = pts != null && pts > 0
-          ? `今日已签到（服务端记录：今天已入账 ${pts} 分）`
-          : '今日已签到（服务端已存在今天的签到记录）';
-        result.detail = '服务端日历前哨检查命中，未点击按钮';
-        return result;
-      }
-      result.detail = '调试模式：服务端显示今日已签，仍继续点击';
+      result.status = 'repeat';
+      result.already = true;
+      result.message = pts != null && pts > 0
+        ? `今日已签到（服务端记录：今天已入账 ${pts} 分）`
+        : '今日已签到（服务端已存在今天的签到记录）';
+      result.detail = '服务端日历前哨检查命中，未点击按钮';
+      return result;
     }
 
     if (site.mode === 'api') {
@@ -1393,7 +1460,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
 
       // 官网要求 challenge 至少 2.5 秒后才能提交。
       const minStay = Math.max(2500, Number(settings.minStayMs) || 4500);
-      const maxStay = Math.max(minStay, Number(settings.maxStayMs) || 6500);
+      const maxStay = Math.min(30000, Math.max(minStay, Number(settings.maxStayMs) || 6500));
       const stay = minStay + Math.random() * Math.max(0, maxStay - minStay);
       await sleep(stay);
 
@@ -1417,7 +1484,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
       try {
         clickRes = await clickPromise;
       } finally {
-        if (watcher) watcher.stop();
+        if (watcher) await watcher.stop();
       }
       const r = (clickRes && clickRes[0] && clickRes[0].result) || {};
 
@@ -1630,6 +1697,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
         points: result.points,
         message: result.message,
         detail: result.detail || '',
+        identityChanged: result.identityChanged || '',
         exchange: result.exchange || '',
         elapsed: result.elapsed
       });
@@ -1664,6 +1732,7 @@ async function checkinOne(account, site, settings, trigger, opts) {
           todayPoints,
           message: result.message,
           detail: result.detail || '',
+          identityChanged: result.identityChanged || null,
           exchange: result.exchange || '',
           exchangeDate: result.exchangeOk
             ? todayStr()
@@ -1832,9 +1901,20 @@ async function sendPushNotification(settings, title, content) {
   if (settings.serverchanKey) {
     const t = timeout();
     const key = settings.serverchanKey;
-    const url = /^https?:\/\//i.test(key)
-      ? (key.endsWith('.send') ? key : key.replace(/\/+$/, '') + '.send')
-      : `https://sctapi.ftqq.com/${encodeURIComponent(key)}.send`;
+    let url;
+    if (/^https?:\/\//i.test(key)) {
+      try {
+        const u = new URL(key);
+        if (!u.pathname.endsWith('.send')) {
+          u.pathname = u.pathname.replace(/\/+$/, '') + '.send';
+        }
+        url = u.toString();
+      } catch (e) {
+        url = key;
+      }
+    } else {
+      url = `https://sctapi.ftqq.com/${encodeURIComponent(key)}.send`;
+    }
     try {
       const resp = await fetch(url, {
         method: 'POST',
@@ -1948,6 +2028,7 @@ async function runAll(options) {
   if (running) return { results: [], skipped: 0, busy: true };
   running = true;
   identityGuard = new Map();
+  acquireKeepAlive();
 
   try {
     const { accounts, sites, settings } = await getState();
@@ -2011,6 +2092,13 @@ async function runAll(options) {
               trigger: dup.trigger, status: dup.status, ok: false, points: 0, message: dup.message
             });
           } catch (err) { /* ignore */ }
+          try {
+            await updateAccount(t.acc.id, {
+              last: {
+                date: today, status: 'fail', message: dup.message, at: Date.now()
+              }
+            });
+          } catch (err) { /* ignore */ }
           continue;
         }
         sessionSites.add(t.site.id);
@@ -2052,6 +2140,7 @@ async function runAll(options) {
     return { results, skipped };
   } finally {
     running = false;
+    releaseKeepAlive();
   }
 }
 
@@ -2153,6 +2242,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === ALARM_TICK) {
     try { await tick(); } catch (e) { console.error('[tick]', e); }
   } else if (alarm.name === ALARM_DELAY) {
+    acquireKeepAlive();
     try {
       const { [DELAY_PLAN]: plan } = await chrome.storage.local.get(DELAY_PLAN);
       if (!plan || plan.date !== todayStr()) {
@@ -2177,6 +2267,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         await chrome.storage.local.remove(DELAY_PLAN);
       }
     } catch (e) { console.error('[delay]', e); }
+    finally { releaseKeepAlive(); }
   }
 });
 
@@ -2229,23 +2320,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'saveState': {
           const patch = msg.patch || {};
           const allowed = {};
-          if (patch.accounts) {
-            const stored = await chrome.storage.local.get('accounts');
-            const prev = Array.isArray(stored.accounts) ? stored.accounts : [];
-            const prevById = new Map(prev.map((a) => [a.id, a]));
-            allowed.accounts = patch.accounts.map((a) => {
-              const old = a && a.id ? prevById.get(a.id) : null;
-              if (!old) return a;
-              const merged = Object.assign({}, old, a);
-              const oldAt = (old.last && old.last.at) || 0;
-              const newAt = (a.last && a.last.at) || 0;
-              if (oldAt > newAt) merged.last = old.last;
-              const oldSnap = (old.snapshot && old.snapshot.at) || 0;
-              const newSnap = (a.snapshot && a.snapshot.at) || 0;
-              if (oldSnap > newSnap) merged.snapshot = old.snapshot;
-              return merged;
-            });
-          }
           if (patch.sites) allowed.sites = patch.sites;
           if (patch.settings) {
             const current = await chrome.storage.local.get('settings');
@@ -2253,7 +2327,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               {}, DEFAULT_SETTINGS, current.settings || {}, patch.settings
             );
           }
-          await saveState(allowed);
+          await withAccountLock(async () => {
+            if (patch.accounts) {
+              const stored = await chrome.storage.local.get('accounts');
+              const prev = Array.isArray(stored.accounts) ? stored.accounts : [];
+              const prevById = new Map(prev.map((a) => [a.id, a]));
+              allowed.accounts = patch.accounts.map((a) => {
+                const old = a && a.id ? prevById.get(a.id) : null;
+                if (!old) return a;
+                const merged = Object.assign({}, old, a);
+                const oldAt = (old.last && old.last.at) || 0;
+                const newAt = (a.last && a.last.at) || 0;
+                if (oldAt > newAt) merged.last = old.last;
+                const oldSnap = (old.snapshot && old.snapshot.at) || 0;
+                const newSnap = (a.snapshot && a.snapshot.at) || 0;
+                if (oldSnap > newSnap) merged.snapshot = old.snapshot;
+                return merged;
+              });
+            }
+            await saveState(allowed);
+          });
           // 设置变更后清掉过期计划，由下一次 tick 重新安排
           if (patch.accounts || patch.sites || patch.settings) {
             await chrome.alarms.clear(ALARM_DELAY);
@@ -2322,6 +2415,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             break;
           }
           await clearAllSessionRules();
+          for (const [tabId] of Array.from(keptTabs.entries())) {
+            try { await chrome.tabs.remove(tabId); } catch (e) { /* 已关闭 */ }
+          }
+          keptTabs.clear();
+          await persistKeptTabs();
           sendResponse({ ok: true });
           break;
         }

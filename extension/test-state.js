@@ -42,7 +42,7 @@ const sandbox = {
     runtime: {
       onInstalled: { addListener: noop }, onStartup: { addListener: noop },
       onMessage: { addListener: noop }, getURL: (p) => p,
-      getManifest: () => ({ version: '1.1.3' }),
+      getManifest: () => ({ version: '1.1.6' }),
       getPlatformInfo: (cb) => cb && cb({}), lastError: null
     },
     alarms: { onAlarm: { addListener: noop }, get: asyncNoop, create: noop, clear: asyncNoop },
@@ -172,6 +172,41 @@ function check(name, cond, extra) {
   });
   check('删除账号（提交空数组）生效', (store.accounts || []).length === 0,
     `剩余 ${(store.accounts || []).length}`);
+
+  // ---- 6. 并发 updateAccount：读-改-写整体入队，字段不丢 ----
+  store = { accounts: [{ id: 'acc_c', name: '并发' }] };
+  const ups = [];
+  for (let i = 1; i <= 8; i++) {
+    ups.push(sandbox2.updateAccount('acc_c', { [`f${i}`]: i }));
+  }
+  await Promise.all(ups);
+  const ca = (store.accounts || [])[0] || {};
+  let allKept = true;
+  for (let i = 1; i <= 8; i++) if (ca[`f${i}`] !== i) allKept = false;
+  check('并发 8 次 updateAccount 更新全部保留', allKept, JSON.stringify(ca));
+
+  // ---- 7. 签到写 last 与设置页保存交错，签到结果不被覆盖 ----
+  store = {
+    accounts: [{
+      id: 'acc_r', name: '原名',
+      last: { date: '2026-11-22', at: 1000, status: 'fail', points: 0 }
+    }]
+  };
+  const staleUi = [{
+    id: 'acc_r', name: '改名',
+    last: { date: '2026-11-22', at: 1000, status: 'fail', points: 0 }
+  }];
+  const signIn = sandbox2.updateAccount('acc_r', {
+    last: { date: '2026-11-23', at: 5000, status: 'success', points: 42 }
+  });
+  const uiSave = new Promise((resolve) => {
+    listener({ type: 'saveState', patch: { accounts: staleUi } }, {}, resolve);
+  });
+  await Promise.all([signIn, uiSave]);
+  const ra = (store.accounts || [])[0] || {};
+  check('签到写 last 与设置页保存交错后签到结果不丢',
+    ra.last && ra.last.at === 5000 && ra.last.status === 'success' && ra.name === '改名',
+    JSON.stringify(ra));
 
   console.log('=== 存储竞态测试 ===\n');
   rows.forEach((l) => console.log('  ' + l));

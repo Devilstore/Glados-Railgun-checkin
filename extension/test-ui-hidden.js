@@ -104,7 +104,7 @@ const sandbox = {
       return 0;
     }
   },
-  chrome: { runtime: { getManifest: () => ({ version: '1.1.3' }) } },
+  chrome: { runtime: { getManifest: () => ({ version: '1.1.6' }) } },
   window: {}
 };
 sandbox.window.Updater = sandbox.Updater;
@@ -119,22 +119,22 @@ const decide = sandbox.__decide;
 const hour = 3600 * 1000;
 const now = Date.now();
 
-const c1 = decide({ current: '1.1.3', lastResult: null, checkedAt: 0, intervalMs: hour });
+const c1 = decide({ current: '1.1.6', lastResult: null, checkedAt: 0, intervalMs: hour });
 check('从未检查 → 进入联网态（stale=true 且无按钮）',
   c1.stale === true && c1.button === null, JSON.stringify(c1));
 
 const c2 = decide({
-  current: '1.1.3',
-  lastResult: { latest: '1.1.4', hasUpdate: true },
+  current: '1.1.6',
+  lastResult: { latest: '1.1.7', hasUpdate: true },
   checkedAt: now - 2 * hour,
   intervalMs: hour
 });
-check('缓存里已有新版本 → 即使过期也直接给「更新」按钮',
-  c2.button === 'btnApplyUpdate' && c2.cls === 'is-new', JSON.stringify(c2));
+check('缓存里已有新版本 → 直接给「更新」按钮且不联网',
+  c2.button === 'btnApplyUpdate' && c2.cls === 'is-new' && c2.stale === false, JSON.stringify(c2));
 
 const c3 = decide({
-  current: '1.1.3',
-  lastResult: { latest: '1.1.3', hasUpdate: false },
+  current: '1.1.6',
+  lastResult: { latest: '1.1.6', hasUpdate: false },
   checkedAt: now - 10 * 60 * 1000,
   intervalMs: hour
 });
@@ -143,8 +143,8 @@ check('刚查过且已是最新 → 不联网，显示「已是最新」',
   JSON.stringify(c3));
 
 const c4 = decide({
-  current: '1.1.3',
-  lastResult: { latest: '1.1.3', hasUpdate: false },
+  current: '1.1.6',
+  lastResult: { latest: '1.1.6', hasUpdate: false },
   checkedAt: now - 3 * hour,
   intervalMs: hour
 });
@@ -152,7 +152,7 @@ check('超过节流窗口 → 重新进入联网态',
   c4.stale === true, JSON.stringify(c4));
 
 const c5 = decide({
-  current: '1.1.3',
+  current: '1.1.6',
   lastResult: { latest: '1.1.0', hasUpdate: false },   // 远端比本地旧
   checkedAt: now - 2 * hour,
   intervalMs: hour

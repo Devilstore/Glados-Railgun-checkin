@@ -37,6 +37,7 @@ let TODAY = '';
 let editingId = null;
 let busy = false;
 let accMode = 'session';
+let settingsDirty = false;
 
 const MODE_HINT = {
   session: '使用当前浏览器已登录的 GLaDOS 会话，无需填写 Cookie。同一站点只能有一个。',
@@ -300,6 +301,7 @@ function renderSites() {
 
 // ---- 渲染：服务器日历 ----
 let calBusy = false;
+let calendarLoaded = false;
 
 function fillCalAccounts() {
   const sel = $('calAccount');
@@ -379,6 +381,7 @@ async function loadCalendar(accountId) {
         </div>
       `;
     }).join('');
+    calendarLoaded = true;
   } catch (e) {
     $('calStatus').hidden = false;
     $('calStatus').className = 'cal-status is-error';
@@ -517,7 +520,7 @@ function decideUpdateView(input) {
       cls: 'is-new',
       text: `${vTag(cur)} → ${vTag(last.latest)}  有新版本` + (ago ? `（${ago}检查）` : ''),
       button: 'btnApplyUpdate',
-      stale: true
+      stale: false
     };
   }
 
@@ -612,42 +615,43 @@ async function applyUpdate() {
   if (!window.Updater) { toast('更新模块未加载', true); return; }
   if (busy) { toast('正在签到，请等签到结束后再更新', true); return; }
 
-  // 优先用缓存的版本信息
-  let rel = pendingRelease;
-  if (!rel) {
-    const cached = await readUpdateCache();
-    const latest = cached && cached.latest;
-    if (!latest || Updater.compareVer(latest, curVer()) <= 0) {
-      toast('没有可更新的版本，请先检查更新', true);
-      return;
-    }
-    try {
-      const fresh = await Updater.fetchLatest();
-      if (Updater.compareVer(fresh.version, curVer()) <= 0) {
-        toast('已是最新版本', true);
-        return;
-      }
-      rel = fresh;
-    } catch (e) {
-      toast('获取更新包失败：' + e.message, true);
-      return;
-    }
-  }
-
-  const verTag = vTag(rel.version);
-  const sure = confirm(
-    `更新到 ${verTag}？\n\n` +
-    '· 只覆盖安装包内的文件，不删除目录里的其他文件\n' +
-    '· 旧文件会备份到 backups/\n' +
-    '· 首次需要你指定一次扩展所在目录，之后会记住'
-  );
-  if (!sure) return;
-
   updateBusy = true;
   const btn = $('btnApplyUpdate');
   btn.disabled = true;
 
+  let rel = pendingRelease;
+  let verTag = rel ? vTag(rel.version) : '';
   try {
+    // 优先用缓存的版本信息
+    if (!rel) {
+      const cached = await readUpdateCache();
+      const latest = cached && cached.latest;
+      if (!latest || Updater.compareVer(latest, curVer()) <= 0) {
+        toast('没有可更新的版本，请先检查更新', true);
+        return;
+      }
+      try {
+        const fresh = await Updater.fetchLatest();
+        if (Updater.compareVer(fresh.version, curVer()) <= 0) {
+          toast('已是最新版本', true);
+          return;
+        }
+        rel = fresh;
+        verTag = vTag(rel.version);
+      } catch (e) {
+        toast('获取更新包失败：' + e.message, true);
+        return;
+      }
+    }
+
+    const sure = confirm(
+      `更新到 ${verTag}？\n\n` +
+      '· 只覆盖安装包内的文件，不删除目录里的其他文件\n' +
+      '· 旧文件会备份到 backups/\n' +
+      '· 首次需要你指定一次扩展所在目录，之后会记住'
+    );
+    if (!sure) return;
+
     const r = await Updater.apply(rel, {
       backup: true,
       onProgress: (t) => setUpdateLine('is-new', t)
@@ -749,8 +753,10 @@ async function reload() {
 
   renderAccounts();
   renderSites();
-  renderSchedule();
-  renderPush();
+  if (!settingsDirty) {
+    renderSchedule();
+    renderPush();
+  }
   renderLogs();
   fillCalAccounts();
 }
@@ -1198,16 +1204,18 @@ function bindEvents() {
     if (panel) panel.classList.add('is-active');
 
     // 首次进入日历页自动读一次
-    if (btn.dataset.tab === 'calendar' && !$('calGrid').childElementCount) {
+    if (btn.dataset.tab === 'calendar' && !calendarLoaded) {
       loadCalendar().catch((err) => toast(err.message, true));
     }
   });
 
   // 服务器日历
   $('btnCalRefresh').addEventListener('click', () => {
+    calendarLoaded = false;
     loadCalendar().catch((err) => toast(err.message, true));
   });
   $('calAccount').addEventListener('change', () => {
+    calendarLoaded = false;
     $('calGrid').innerHTML = '';
     loadCalendar().catch((err) => toast(err.message, true));
   });
@@ -1302,6 +1310,10 @@ function bindEvents() {
     send('saveState', { patch: { sites } }).then(reload);
   });
 
+  const markDirty = () => { settingsDirty = true; };
+  $('panel-settings').addEventListener('input', markDirty);
+  $('panel-settings').addEventListener('change', markDirty);
+
   // 调度
   $('autoClickTurnstile').addEventListener('change', (e) => {
     if (!e.target.checked) return;
@@ -1314,8 +1326,8 @@ function bindEvents() {
     const settings = {
       targetHour: Math.max(0, Math.min(23, parseInt($('targetHour').value, 10) || 0)),
       maxDelayMinutes: Math.max(1, Math.min(59, parseInt($('maxDelay').value, 10) || 45)),
-      minStayMs: Math.max(2500, parseInt($('minStay').value, 10) || 4500),
-      maxStayMs: Math.max(2500, parseInt($('maxStay').value, 10) || 6500),
+      minStayMs: Math.min(30000, Math.max(2500, parseInt($('minStay').value, 10) || 4500)),
+      maxStayMs: Math.min(30000, Math.max(2500, parseInt($('maxStay').value, 10) || 6500)),
       skipIfDone: $('skipIfDone').checked,
       notifyEnabled: $('notifyEnabled').checked,
       autoClickTurnstile: $('autoClickTurnstile').checked,
@@ -1329,6 +1341,7 @@ function bindEvents() {
       return;
     }
     await send('saveState', { patch: { settings } });
+    settingsDirty = false;
     await reload();
     toast('设置已保存；旧随机计划已取消，将在下次巡检重新安排');
   });
@@ -1349,6 +1362,7 @@ function bindEvents() {
       serverchanKey: $('serverchanKey').value.trim()
     });
     await send('saveState', { patch: { settings } });
+    settingsDirty = false;
     await reload();
     toast('推送配置已保存');
   });
@@ -1380,7 +1394,9 @@ function bindEvents() {
 
   // 快捷键
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('modalMask').hidden) closeModal();
+    if (e.key !== 'Escape') return;
+    if (!$('modalMask').hidden) closeModal();
+    document.querySelectorAll('.modal-mask:not(#modalMask):not([hidden])').forEach((m) => m.remove());
   });
 }
 

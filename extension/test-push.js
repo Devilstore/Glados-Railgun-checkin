@@ -20,7 +20,7 @@ const sandbox = {
   console,
   setTimeout, clearTimeout, setInterval, clearInterval,
   Date, Math, JSON, Promise, Number, String, Array, Object, Map, Set,
-  URLSearchParams, AbortController,
+  URLSearchParams, AbortController, URL,
   fetch: async (url, init) => {
     const params = init && init.body instanceof URLSearchParams ? init.body : new URLSearchParams();
     if (String(url).includes('pushdeer')) {
@@ -30,7 +30,7 @@ const sandbox = {
         text: params.get('text')
       };
     } else if (String(url).includes('sctapi') || String(url).includes('.send')) {
-      captured.serverchan = { desp: params.get('desp'), title: params.get('title') };
+      captured.serverchan = { desp: params.get('desp'), title: params.get('title'), url: String(url) };
     }
     return { ok: true, json: async () => ({ code: 0, data: {} }) };
   },
@@ -138,9 +138,35 @@ const cases = [
     }
   }
 
+  // Server酱 URL 拼接：只按 pathname 是否以 .send 结尾决定，保留 query
+  const sendPush = sandbox.sendPushNotification;
+  const urlCases = [
+    ['纯 key', 'SCTABC', 'https://sctapi.ftqq.com/SCTABC.send'],
+    ['完整 URL 无 .send', 'https://sctapi.ftqq.com/abc?foo=1',
+      'https://sctapi.ftqq.com/abc.send?foo=1'],
+    ['完整 URL 带 .send 和 query', 'https://sctapi.ftqq.com/abc.send?foo=1',
+      'https://sctapi.ftqq.com/abc.send?foo=1'],
+    ['完整 URL 带 .send 无 query', 'https://sctapi.ftqq.com/abc.send',
+      'https://sctapi.ftqq.com/abc.send']
+  ];
+  for (const [name, key, expected] of urlCases) {
+    captured.serverchan = null;
+    await sendPush({ serverchanKey: key }, 't', ['l']);
+    const ok = captured.serverchan && captured.serverchan.url === expected;
+    if (ok) pass++;
+    rows.push(`${ok ? '[OK  ]' : '[FAIL]'} ServerChan URL · ${name}`);
+    if (!ok) {
+      rows.push(`        期望: ${expected}`);
+      rows.push(`        实际: ${captured.serverchan && captured.serverchan.url}`);
+    }
+  }
+  captured.pushdeer = null;
+  captured.serverchan = null;
+  await notifySummary(cases[0].results, settings, 0);
+
   console.log('=== 推送格式对比（基准 = Python Report.render）===\n');
   rows.forEach((l) => console.log('  ' + l));
-  const total = cases.length * 5;
+  const total = cases.length * 5 + 4;
   console.log(`\n${pass}/${total} 通过`);
 
   // 附：换行可视化，便于人眼确认
