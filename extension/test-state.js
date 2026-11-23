@@ -42,7 +42,7 @@ const sandbox = {
     runtime: {
       onInstalled: { addListener: noop }, onStartup: { addListener: noop },
       onMessage: { addListener: noop }, getURL: (p) => p,
-      getManifest: () => ({ version: '1.1.6' }),
+      getManifest: () => ({ version: '1.1.7' }),
       getPlatformInfo: (cb) => cb && cb({}), lastError: null
     },
     alarms: { onAlarm: { addListener: noop }, get: asyncNoop, create: noop, clear: asyncNoop },

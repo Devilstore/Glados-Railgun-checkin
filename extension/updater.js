@@ -23,6 +23,11 @@
     return !!(e && (e.name === 'NotFoundError' || /not\s*found/i.test(e.message || '')));
   }
 
+  function isTypeMismatch(e) {
+    return !!(e && (e.name === 'TypeMismatchError' ||
+      /not an entry of requested type/i.test(e.message || '')));
+  }
+
   function parseVer(v) {
     const m = String(v == null ? '' : v).trim().replace(/^v/i, '')
       .match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?/);
@@ -386,6 +391,7 @@
         let child = null;
         try { child = await node.getDirectoryHandle(name, { create: false }); }
         catch (e) {
+          if (isTypeMismatch(e)) throw new Error(`路径冲突：${name} 是文件，不能作为目录`);
           if (!isNotFound(e)) throw e;
           let asFile = null;
           try { asFile = await node.getFileHandle(name, { create: false }); }
@@ -400,7 +406,10 @@
       const lastName = f.parts[f.parts.length - 1];
       let asDir = null;
       try { asDir = await node.getDirectoryHandle(lastName, { create: false }); }
-      catch (e) { if (!isNotFound(e)) throw e; }
+      catch (e) {
+        if (isTypeMismatch(e) || isNotFound(e)) continue;
+        throw e;
+      }
       if (asDir) throw new Error(`路径冲突：${lastName} 是目录，不能写入文件`);
     }
   }

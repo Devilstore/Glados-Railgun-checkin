@@ -164,6 +164,11 @@ function makeDir(name) {
     async getDirectoryHandle(n, opt) {
       const c = this.children.get(n);
       if (c && c.kind === 'directory') return c;
+      if (c && c.kind === 'file') {
+        const e = new Error('The path supplied exists, but was not an entry of requested type.');
+        e.name = 'TypeMismatchError';
+        throw e;
+      }
       if (!opt || !opt.create) throw new Error('NotFound: ' + n);
       const d = makeDir(n);
       this.children.set(n, d);
@@ -172,6 +177,11 @@ function makeDir(name) {
     async getFileHandle(n, opt) {
       const c = this.children.get(n);
       if (c && c.kind === 'file') return c;
+      if (c && c.kind === 'directory') {
+        const e = new Error('The path supplied exists, but was not an entry of requested type.');
+        e.name = 'TypeMismatchError';
+        throw e;
+      }
       if (!opt || !opt.create) throw new Error('NotFound: ' + n);
       const f = makeFile(n, null);
       this.children.set(n, f);
@@ -360,7 +370,7 @@ async function putFile(dir, p, content) {
 
   const release = { version: '1.1.0', zip: { name: 'x.zip', url: 'https://example/x.zip' } };
   const res = await U.apply(release, { backup: true });
-  check('写入文件数 = 包内文件数', res.written === 3, `written=${res.written}`);
+  check('覆盖已存在的普通文件不被误判为冲突', res.written === 3, `written=${res.written}`);
   check('root manifest.json 已更新', readFile(root, 'manifest.json').includes('1.1.0'));
   check('background.js 已覆盖为新内容', readFile(root, 'background.js') === 'console.log(1);');
   check('新文件 icons/icon16.png 已创建', readFile(root, 'icons/icon16.png') === 'PNGDATA');
