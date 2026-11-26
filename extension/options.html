@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>GLaDOS 自动签到 · 设置</title>
+<link rel="stylesheet" href="options.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ 侧边栏 ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="icons/icon48.png" alt="" class="brand-logo">
+      <div class="brand-text">
+        <strong>GLaDOS 自动签到</strong>
+        <span id="brandVersion">v1.1.1</span>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item is-active" data-tab="accounts">
+        <span>账号</span>
+        <span class="nav-badge" id="badgeAccounts">0</span>
+      </button>
+      <button class="nav-item" data-tab="sites">
+        <span>站点</span>
+      </button>
+      <button class="nav-item" data-tab="calendar">
+        <span>签到日历</span>
+      </button>
+      <button class="nav-item" data-tab="settings">
+        <span>设置</span>
+      </button>
+      <button class="nav-item" data-tab="logs">
+        <span>日志</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <a class="promo-card"
+         href="https://glados.space/landing/0A58E-NV28S-6U3QV-33VMG"
+         target="_blank" rel="noopener noreferrer"
+         title="还没有账号？点击注册；使用优惠码 DEVILSTORE 享 9 折">
+        <span class="promo-kicker">GLaDOS</span>
+        <strong>还没有账号？点击注册</strong>
+        <span class="promo-note">优惠码 DEVILSTORE · 9 折</span>
+      </a>
+      <div class="today-tip">
+        <div class="tip-label">今日签到</div>
+        <div class="tip-value" id="todaySummary">—</div>
+      </div>
+      <button class="btn btn-primary btn-block" id="btnRunAll">立即签到全部</button>
+    </div>
+  </aside>
+
+  <!-- ============ 主区域 ============ -->
+  <main class="main">
+
+    <div class="version-warn" id="versionWarn" hidden></div>
+
+    <!-- ---------- 更新提示（单行，默认只有一条状态 + 一个按钮） ---------- -->
+    <div class="update-line" id="updateBar">
+      <span class="update-state" id="updateState">尚未检查更新</span>
+      <button class="link-btn" id="btnToggleNotes" hidden>更新说明</button>
+      <span class="update-actions">
+        <button class="btn btn-ghost btn-sm" id="btnCheckUpdate">检查更新</button>
+        <button class="btn btn-primary btn-sm" id="btnApplyUpdate" hidden>更新</button>
+        <button class="btn btn-primary btn-sm" id="btnReloadExt" hidden>重新加载</button>
+      </span>
+    </div>
+    <div class="update-notes" id="updateNotes" hidden></div>
+
+    <!-- ---------- 账号 ---------- -->
+    <section class="panel is-active" id="panel-accounts">
+      <header class="panel-head">
+        <div>
+          <h1>账号</h1>
+          <p class="sub">主账号用浏览器登录态，其他账号用 Cookie</p>
+        </div>
+        <div class="panel-actions">
+          <button class="btn btn-ghost" id="btnProbeLogin">测登录态</button>
+          <button class="btn btn-primary" id="btnAddAccount">+ 添加账号</button>
+        </div>
+      </header>
+
+      <div class="cards" id="accountList"></div>
+      <div class="empty" id="accountsEmpty" hidden>
+        <div class="empty-icon">◉</div>
+        <div class="empty-title">还没有账号</div>
+        <div class="empty-desc">添加第一个账号后即可开始自动签到</div>
+      </div>
+    </section>
+
+    <!-- ---------- 站点 ---------- -->
+    <section class="panel" id="panel-sites">
+      <header class="panel-head">
+        <div>
+          <h1>站点</h1>
+          <p class="sub">选择要签到的站点</p>
+        </div>
+      </header>
+
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th style="width:64px">启用</th>
+              <th>域名</th>
+              <th style="width:80px"></th>
+            </tr>
+          </thead>
+          <tbody id="siteList"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ---------- 服务器日历 ---------- -->
+    <section class="panel" id="panel-calendar">
+      <header class="panel-head">
+        <div>
+          <h1>服务器日历</h1>
+          <p class="sub">查看服务端签到记录与积分</p>
+        </div>
+        <div class="panel-actions">
+          <select id="calAccount" class="input"></select>
+          <button class="btn btn-primary" id="btnCalRefresh">刷新</button>
+        </div>
+      </header>
+
+      <div class="cal-summary">
+        <div class="cal-stat">
+          <div class="cal-stat-label">总积分</div>
+          <div class="cal-stat-value" id="calPoints">—</div>
+        </div>
+        <div class="cal-stat">
+          <div class="cal-stat-label">连续签到</div>
+          <div class="cal-stat-value" id="calStreak">—</div>
+        </div>
+        <div class="cal-stat">
+          <div class="cal-stat-label">剩余天数</div>
+          <div class="cal-stat-value" id="calLeftDays">—</div>
+        </div>
+        <div class="cal-stat">
+          <div class="cal-stat-label">今日</div>
+          <div class="cal-stat-value" id="calToday">—</div>
+        </div>
+      </div>
+
+      <div class="cal-status" id="calStatus" role="status" aria-live="polite" hidden></div>
+
+      <div class="cal-board" id="calBoard" hidden>
+        <div class="cal-week-head">
+          <span>一</span><span>二</span><span>三</span><span>四</span>
+          <span>五</span><span>六</span><span>日</span>
+        </div>
+        <div class="cal-grid" id="calGrid"></div>
+        <div class="cal-legend">
+          <span><i class="lg-checked"></i>已签到（数字为当日积分）</span>
+          <span><i class="lg-today"></i>今天</span>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ---------- 设置 ---------- -->
+    <section class="panel" id="panel-settings">
+      <header class="panel-head">
+        <div>
+          <h1>设置</h1>
+          <p class="sub">调度、通知与推送</p>
+        </div>
+      </header>
+
+      <div class="settings-grid">
+      <div class="form-card">
+        <h2 class="section-title">签到调度</h2>
+        <div class="field">
+          <label for="targetHour">每天签到时段</label>
+          <div class="field-row">
+            <input type="number" id="targetHour" min="0" max="23" step="1" class="input input-num">
+            <span class="unit">点</span>
+            <span class="field-hint">在该小时内随机时刻触发（0–23）</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="maxDelay">随机延迟上限</label>
+          <div class="field-row">
+            <input type="number" id="maxDelay" min="1" max="59" step="1" class="input input-num">
+            <span class="unit">分钟</span>
+            <span class="field-hint">在目标小时内最多等待这么久再执行</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="minStay">页面停留</label>
+          <div class="field-row">
+            <input type="number" id="minStay" min="2500" max="30000" step="500" class="input input-num">
+            <span class="unit">–</span>
+            <input type="number" id="maxStay" min="2500" max="30000" step="500" class="input input-num">
+            <span class="unit">毫秒</span>
+          </div>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
+              <strong>今日已签则跳过</strong>
+              <em>影响手动批量签到；自动任务无论如何每天只跑一次</em>
+            </span>
+            <input type="checkbox" id="skipIfDone" class="switch">
+          </label>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
+              <strong>桌面通知</strong>
+              <em>全部任务完成后在系统通知中心提示汇总结果</em>
+            </span>
+            <input type="checkbox" id="notifyEnabled" class="switch">
+          </label>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
+              <strong>测试签到显示签到窗口</strong>
+              <em>单账号测试时把签到页切到前台，能直接看到按钮点击过程</em>
+            </span>
+            <input type="checkbox" id="foregroundOnManual" class="switch">
+          </label>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
+              <strong>被验证拦截时切前台人工完成</strong>
+              <em>服务端返回 Cloudflare 失败后，把页面放到前台等你过验证，通过后自动重试一次</em>
+            </span>
+            <input type="checkbox" id="humanVerify" class="switch">
+          </label>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
+              <strong>验证未完成时保留标签页</strong>
+              <em>不自动关闭签到页，方便接着手动完成验证</em>
+            </span>
+            <input type="checkbox" id="keepTabOnVerify" class="switch">
+          </label>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
+              <strong>自动点击 Cloudflare 验证框</strong>
+              <em>实验性；使用 Chrome 调试接口，图片验证仍需手动完成</em>
+            </span>
+            <input type="checkbox" id="autoClickTurnstile" class="switch">
+          </label>
+        </div>
+
+        <div class="field field-switch">
+          <label class="switch-row">
+            <span>
+              <strong>打开设置页时检查更新</strong>
+              <em>只读 GitHub 版本号，每 1 小时最多一次；关闭后完全不联网检查</em>
+            </span>
+            <input type="checkbox" id="updateCheckEnabled" class="switch">
+          </label>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-primary" id="btnSaveSchedule">保存设置</button>
+          <button class="btn btn-ghost" id="btnTestNotify" title="如果系统未弹出，请检查 Windows 通知权限/专注助手">测试通知</button>
+        </div>
+      </div>
+
+      <div class="form-card">
+        <h2 class="section-title">远程推送</h2>
+        <div class="field">
+          <label for="pushdeerKey">PushDeer SendKey</label>
+          <input type="password" id="pushdeerKey" class="input" autocomplete="off"
+                 placeholder="PDU...；留空不启用">
+          <div class="field-hint">PushDeer 的 pushkey，可从 PushDeer 客户端获取。</div>
+        </div>
+
+        <div class="field">
+          <label for="serverchanKey">ServerChan SendKey</label>
+          <input type="password" id="serverchanKey" class="input" autocomplete="off"
+                 placeholder="SCT...；留空不启用">
+          <div class="field-hint">ServerChan 的 SendKey，签到结果会推送到微信。</div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-primary" id="btnSavePush">保存推送配置</button>
+          <button class="btn btn-ghost" id="btnTestPush">发送测试推送</button>
+        </div>
+      </div>
+      </div>
+    </section>
+
+    <!-- ---------- 日志 ---------- -->
+    <section class="panel" id="panel-logs">
+      <header class="panel-head">
+        <div>
+          <h1>日志</h1>
+          <p class="sub">最近 300 条执行记录，仅保存在本机</p>
+        </div>
+        <button class="btn btn-ghost" id="btnClearLogs">清空日志</button>
+      </header>
+      <div class="log-list" id="logList"></div>
+      <div class="empty" id="logsEmpty" hidden>
+        <div class="empty-icon">≡</div>
+        <div class="empty-title">暂无记录</div>
+        <div class="empty-desc">执行签到后这里会显示结果</div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ============ 账号编辑弹窗 ============ -->
+<div class="modal-mask" id="modalMask" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <header class="modal-head">
+      <h2 id="modalTitle">添加账号</h2>
+      <button class="icon-btn" id="btnCloseModal" aria-label="关闭">×</button>
+    </header>
+
+    <div class="modal-body">
+      <div class="field">
+        <label for="accName">名称</label>
+        <input type="text" id="accName" class="input" placeholder="留空自动命名为账号 1">
+      </div>
+
+      <div class="field">
+        <label for="accSite">所属站点</label>
+        <select id="accSite" class="input"></select>
+      </div>
+
+      <div class="field">
+        <label for="accExchange">兑换模式</label>
+        <select id="accExchange" class="input">
+          <option value="none">不自动兑换</option>
+          <option value="plan100">100 积分兑换</option>
+          <option value="plan200">200 积分兑换</option>
+          <option value="plan500">500 积分兑换</option>
+        </select>
+        <div class="field-hint">签到成功或今日已签后自动尝试；积分不足时由服务端拒绝。</div>
+      </div>
+
+      <div class="field">
+        <label>认证方式</label>
+        <div class="seg" id="accMode">
+          <button type="button" class="seg-btn is-active" data-mode="session">浏览器登录态</button>
+          <button type="button" class="seg-btn" data-mode="cookie">手动填 Cookie</button>
+        </div>
+        <div class="field-hint" id="modeHint"></div>
+      </div>
+
+      <div id="cookieFields">
+        <div class="field">
+          <label for="accCookie">
+            Cookie
+            <button class="link-btn" id="btnReadCookie" type="button">读取当前登录</button>
+          </label>
+          <textarea id="accCookie" class="input textarea" rows="4"
+            placeholder="koa:sess=...; koa:sess.sig=...; gld:accts=...; gld:accts.sig=...; gld:sess=...; gld:sess.sig=..."></textarea>
+          <div class="field-hint" id="cookieHint">
+            支持 koa:sess + sig 或 gld:sess + sig；不同域名的 Cookie 不通用。
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="accUa">
+            User-Agent
+            <button class="link-btn" id="btnReadUa" type="button">读取当前</button>
+          </label>
+          <input type="text" id="accUa" class="input" placeholder="留空则使用浏览器真实 UA（推荐）">
+          <div class="field-hint">仅当 Cookie 来自其他设备时填写，且需与该设备一致。</div>
+        </div>
+      </div>
+
+      <label class="switch-row switch-row--box">
+        <span>
+          <strong>启用此账号</strong>
+          <em>关闭后不会参与自动签到</em>
+        </span>
+        <input type="checkbox" id="accEnabled" class="switch" checked>
+      </label>
+    </div>
+
+    <footer class="modal-foot">
+      <button class="btn btn-ghost" id="btnCancelModal">取消</button>
+      <button class="btn btn-primary" id="btnSaveAccount">保存</button>
+    </footer>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="updater.js"></script>
+<script src="options.js"></script>
+</body>
+</html>

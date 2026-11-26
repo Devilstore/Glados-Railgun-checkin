@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>GLaDOS 自动签到</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<div class="pop">
+
+  <header class="pop-head">
+    <div class="pop-brand">
+      <img src="icons/icon32.png" alt="">
+      <strong>GLaDOS 自动签到</strong>
+    </div>
+    <button class="gear" id="btnOptions" title="设置" aria-label="打开设置">⚙</button>
+  </header>
+
+  <div class="summary">
+    <div class="summary-main">
+      <span class="summary-num" id="sumSigned">0</span>
+      <span class="summary-sep">/</span>
+      <span class="summary-total" id="sumTotal">0</span>
+    </div>
+    <div class="summary-copy">
+      <div class="summary-label">今日已签到</div>
+      <div class="summary-earned" id="sumEarned">今日合计 —</div>
+    </div>
+  </div>
+
+  <div class="acc-list" id="accList"></div>
+
+  <div class="empty" id="popEmpty" hidden>
+    <p>还没有账号</p>
+    <button class="btn btn-primary btn-sm" id="btnToAdd">前往添加</button>
+  </div>
+
+  <footer class="pop-foot">
+    <button class="btn btn-primary btn-block" id="btnRun">立即签到全部</button>
+    <div class="foot-hint" id="footHint" role="status" aria-live="polite">在真实浏览器中点击按钮完成验证</div>
+    <a class="pop-promo"
+       href="https://glados.space/landing/0A58E-NV28S-6U3QV-33VMG"
+       target="_blank" rel="noopener noreferrer">
+      <span class="pop-promo-kicker">GLaDOS</span>
+      <strong>还没有账号？点击注册</strong>
+      <span class="pop-promo-note">优惠码 DEVILSTORE · 9 折</span>
+    </a>
+  </footer>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

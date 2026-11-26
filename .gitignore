@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 环境变量与账号凭据
+.env
+.env.*
+!.env.example
+glados-accounts*.json
+*accounts*.json
+
+# 本地调试脚本
+debug.py
+
+# 扩展打包产物 / 签名文件
+glados-checkin-extension-*.zip
+extension/*.zip
+*.crx
+*.pem
+
+# 扩展内置更新时的旧文件备份（由 updater 生成）
+extension/_backup/
+
+# 发布临时文件与日志
+SHA256SUMS.txt
+release-notes.md
+logs/
+*.log
+tmp/
+*.tmp
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 构建
+build/
+dist/
+*.egg-info/

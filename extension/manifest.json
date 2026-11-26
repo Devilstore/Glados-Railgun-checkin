@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "GLaDOS 自动签到",
+  "version": "1.1.7",
+  "description": "多账号、多站点自动签到。真实浏览器点击通过 Cloudflare，支持浏览器登录态、Cookie 多账号、服务器日历、推送与内置更新。",
+  "minimum_chrome_version": "103",
+  "permissions": [
+    "alarms",
+    "storage",
+    "notifications",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess",
+    "scripting",
+    "tabs",
+    "cookies",
+    "debugger"
+  ],
+  "host_permissions": [
+    "https://glados.cloud/*",
+    "https://glados.rocks/*",
+    "https://glados.network/*",
+    "https://glados.one/*",
+    "https://glados.space/*",
+    "https://glados.vip/*",
+    "https://railgun.info/*",
+    "https://glados-facility.com/*",
+    "https://api2.pushdeer.com/*",
+    "https://api.pushdeer.com/*",
+    "https://sctapi.ftqq.com/*",
+    "https://*.push.ft07.com/*",
+    "https://api.github.com/*",
+    "https://github.com/*",
+    "https://*.githubusercontent.com/*",
+    "https://codeload.github.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "GLaDOS 自动签到",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_page": "options.html",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
